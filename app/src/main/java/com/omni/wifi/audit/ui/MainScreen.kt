@@ -105,7 +105,7 @@ fun AccessPointCard(ap: AccessPointInfo, onClick: () -> Unit) {
         
         if (ap.potentialVulnerabilities.isNotEmpty()) {
             Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-                HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp)
+                Divider(color = Color.DarkGray, thickness = 0.5.dp)
                 Spacer(modifier = Modifier.height(8.dp))
                 ap.potentialVulnerabilities.take(2).forEach { vuln ->
                     Text(text = "• $vuln", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
