@@ -8,6 +8,8 @@ import com.omni.wifi.audit.domain.model.AccessPointInfo
 import com.omni.wifi.audit.ui.DetailScreen
 import com.omni.wifi.audit.ui.MainScreen
 import com.omni.wifi.audit.ui.theme.OmniWifiAuditTheme
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -53,10 +55,27 @@ class MainActivity : ComponentActivity() {
         setContent {
             OmniWifiAuditTheme {
                 var selectedAp by remember { mutableStateOf<AccessPointInfo?>(null) }
+                var scanResults by remember { mutableStateOf(sampleResults) }
+                var isScanning by remember { mutableStateOf(false) }
+                val coroutineScope = rememberCoroutineScope()
+
+                val scanAction: () -> Unit = {
+                    coroutineScope.launch {
+                        isScanning = true
+                        delay(1200) // Simulate scanning delay
+                        // Shuffle or simulate updated RSSI/networks
+                        scanResults = sampleResults.map { ap ->
+                            ap.copy(signalLevel = (ap.signalLevel..-30).random().coerceIn(-90, -30))
+                        }
+                        isScanning = false
+                    }
+                }
 
                 if (selectedAp == null) {
                     MainScreen(
-                        scanResults = sampleResults,
+                        scanResults = scanResults,
+                        isScanning = isScanning,
+                        onScanClick = scanAction,
                         onAccessPointClick = { ap -> selectedAp = ap }
                     )
                 } else {
