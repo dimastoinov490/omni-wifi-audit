@@ -26,9 +26,37 @@ fun MainScreen(
     scanResults: List<AccessPointInfo>,
     isScanning: Boolean = false,
     onScanClick: () -> Unit = {},
+    onUpdateGithub: () -> Unit = {},
+    onUpdateLocalFile: () -> Unit = {},
     onAccessPointClick: (AccessPointInfo) -> Unit
 ) {
     var dragAmountSum by remember { mutableStateOf(0f) }
+    var showUpdateDialog by remember { mutableStateOf(false) }
+
+    if (showUpdateDialog) {
+        AlertDialog(
+            onDismissRequest = { showUpdateDialog = false },
+            title = { Text("Обновить базы PIN и уязвимостей", color = Color.White) },
+            text = { Text("Выберите источник загрузки файлов баз данных (OUI, CVE, PIN):", color = Color.Gray) },
+            confirmButton = {
+                TextButton(onClick = {
+                    showUpdateDialog = false
+                    onUpdateGithub()
+                }) {
+                    Text("Репозиторий GitHub", color = MaterialTheme.colorScheme.primary)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = {
+                    showUpdateDialog = false
+                    onUpdateLocalFile()
+                }) {
+                    Text("Локальный файл (.json / .txt)", color = Color.LightGray)
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface
+        )
+    }
 
     Column(
         modifier = Modifier
@@ -64,25 +92,38 @@ fun MainScreen(
                 color = Color.White
             )
 
-            Button(
-                onClick = onScanClick,
-                enabled = !isScanning,
-                colors = ButtonDefaults.buttonColors(
-                    containerColor = MaterialTheme.colorScheme.primary
-                ),
-                shape = RoundedCornerShape(8.dp),
-                contentPadding = PaddingValues(horizontal = 12.dp, vertical = 8.dp)
-            ) {
-                if (isScanning) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        color = Color.White,
-                        strokeWidth = 2.dp
-                    )
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = "Поиск...", fontSize = 12.sp)
-                } else {
-                    Text(text = "Сканировать сети", fontSize = 12.sp)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = { showUpdateDialog = true },
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.secondary
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
+                ) {
+                    Text(text = "Обновить базы", fontSize = 11.sp)
+                }
+
+                Button(
+                    onClick = onScanClick,
+                    enabled = !isScanning,
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = MaterialTheme.colorScheme.primary
+                    ),
+                    shape = RoundedCornerShape(8.dp),
+                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
+                ) {
+                    if (isScanning) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(16.dp),
+                            color = Color.White,
+                            strokeWidth = 2.dp
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(text = "Поиск...", fontSize = 11.sp)
+                    } else {
+                        Text(text = "Сканировать", fontSize = 11.sp)
+                    }
                 }
             }
         }
@@ -127,7 +168,7 @@ fun MainScreen(
                     .weight(1f),
                 contentAlignment = Alignment.Center
             ) {
-                Text(text = "Сети не найдены. Нажмите «Сканировать сети».", color = Color.Gray)
+                Text(text = "Сети не найдены. Нажмите «Сканировать».", color = Color.Gray)
             }
         } else {
             LazyColumn(

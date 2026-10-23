@@ -18,6 +18,7 @@ import androidx.compose.runtime.*
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import com.omni.wifi.audit.data.AuditDatabase
+import com.omni.wifi.audit.data.DatabaseManager
 import com.omni.wifi.audit.data.DataInitializer
 import com.omni.wifi.audit.domain.VulnerabilityAnalyzer
 import com.omni.wifi.audit.domain.model.AccessPointInfo
@@ -52,21 +53,40 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val filePickerLauncher = registerForActivityResult(
+        ActivityResultContracts.GetContent()
+    ) { uri ->
+        if (uri != null) {
+            lifecycleScope.launch(Dispatchers.IO) {
+                val db = AuditDatabase.getDatabase(applicationContext)
+                val result = DatabaseManager.updateFromUri(applicationContext, db.auditDao(), uri)
+                withContext(Dispatchers.Main) {
+                    if (result.isSuccess) {
+                        Toast.makeText(this@MainActivity, "Базы успешно обновлены из файла! Загружено: ${result.getOrDefault(0)} записей", Toast.LENGTH_LONG).show()
+                        fetchScanResults()
+                    } else {
+                        Toast.makeText(this@MainActivity, "Ошибка загрузки файла: ${result.exceptionOrNull()?.localizedMessage}", Toast.LENGTH_LONG).show()
+                    }
+                }
+            }
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
-        // Initialize database data
+        // Initialize database data & DatabaseManager snapshot
         lifecycleScope.launch(Dispatchers.IO) {
             val db = AuditDatabase.getDatabase(applicationContext)
             DataInitializer.populate(db.auditDao())
+            DatabaseManager.saveDefaultDatabaseSnapshot(applicationContext, db.auditDao())
         }
 
         // Register broadcast receiver for scan results
         wifiScanReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
-                val success = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false)
                 fetchScanResults()
             }
         }
@@ -90,6 +110,12 @@ class MainActivity : ComponentActivity() {
                         onScanClick = {
                             checkAndStartScan()
                         },
+                        onUpdateGithub = {
+                            updateDatabaseFromGithub()
+                        },
+                        onUpdateLocalFile = {
+                            filePickerLauncher.launch("*/*")
+                        },
                         onAccessPointClick = { ap -> selectedAp = ap }
                     )
                 } else {
@@ -111,10 +137,25 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun updateDatabaseFromGithub() {
+        Toast.makeText(this, "Загрузка обновлений с GitHub...", Toast.LENGTH_SHORT).show()
+        lifecycleScope.launch(Dispatchers.IO) {
+            val db = AuditDatabase.getDatabase(applicationContext)
+            val result = DatabaseManager.updateFromGithub(applicationContext, db.auditDao())
+            withContext(Dispatchers.Main) {
+                if (result.isSuccess) {
+                    Toast.makeText(this@MainActivity, "Базы успешно обновлены с GitHub! Загружено: ${result.getOrDefault(0)} записей", Toast.LENGTH_LONG).show()
+                    fetchScanResults()
+                } else {
+                    Toast.makeText(this@MainActivity, "GitHub недоступен, используется локальный кэш баз данных.", Toast.LENGTH_LONG).show()
+                }
+            }
+        }
+    }
+
     private fun checkAndStartScan() {
         isScanningState.value = true
 
-        // 1. Check permissions
         val hasFineLoc = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val hasCoarseLoc = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
         val hasWifiState = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_WIFI_STATE) == PackageManager.PERMISSION_GRANTED
@@ -133,7 +174,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // 2. Check GPS / Location service
         val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
         val isGpsEnabled = locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER)
         val isNetworkLocationEnabled = locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
@@ -151,7 +191,6 @@ class MainActivity : ComponentActivity() {
         try {
             val success = wifiManager.startScan()
             if (!success) {
-                // If startScan is throttled or failed, try fetching current results directly
                 fetchScanResults()
             }
         } catch (e: Exception) {

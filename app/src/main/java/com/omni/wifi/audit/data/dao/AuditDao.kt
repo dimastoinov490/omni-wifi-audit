@@ -12,6 +12,9 @@ interface AuditDao {
     @Query("SELECT * FROM vendor_oui WHERE oui = :prefix LIMIT 1")
     suspend fun getVendorByOui(prefix: String): VendorOUI?
 
+    @Query("SELECT * FROM vendor_oui")
+    suspend fun getAllOuis(): List<VendorOUI>
+
     @Query("SELECT * FROM wps_algorithms")
     fun getAllWpsAlgorithms(): Flow<List<WpsAlgorithm>>
 

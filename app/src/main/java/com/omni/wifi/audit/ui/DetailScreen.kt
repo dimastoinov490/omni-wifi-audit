@@ -1,5 +1,6 @@
 package com.omni.wifi.audit.ui
 
+import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -10,13 +11,16 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.omni.wifi.audit.domain.model.AccessPointInfo
 import com.omni.wifi.audit.ui.theme.AuditGradient
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 @Composable
 fun DetailScreen(
@@ -24,6 +28,7 @@ fun DetailScreen(
     onBack: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
+    val context = LocalContext.current
     
     // Test states
     var passiveResult by remember { mutableStateOf<String?>(null) }
@@ -108,7 +113,7 @@ fun DetailScreen(
                 coroutineScope.launch {
                     isPassiveRunning = true
                     passiveResult = null
-                    delay(1200) // Simulate audit
+                    delay(1200)
                     passiveResult = "[OK] Каналы стабильны. Скрытые SSID не обнаружены. Шум/интерференция в пределах нормы."
                     isPassiveRunning = false
                 }
@@ -140,21 +145,40 @@ fun DetailScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 3. WPS Auditor
+        // 3. WPS Auditor (requires Root su)
         AuditButtonSection(
             title = "WPS аудитор",
-            description = "Проверка уязвимости WPS (Pixie-Dust, brute-force PIN, Reaver test).",
+            description = "Проверка уязвимости WPS (Pixie-Dust, brute-force PIN, Reaver test). Требует Root-прав.",
             isRunning = isWpsRunning,
             result = wpsResult,
             onClick = {
                 coroutineScope.launch {
                     isWpsRunning = true
                     wpsResult = null
+
+                    // Check Root (su)
+                    val hasRoot = withContext(Dispatchers.IO) {
+                        try {
+                            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
+                            val exitCode = process.waitFor()
+                            exitCode == 0
+                        } catch (e: Exception) {
+                            false
+                        }
+                    }
+
+                    if (!hasRoot) {
+                        Toast.makeText(context, "Для работы этого модуля требуются Root-права", Toast.LENGTH_LONG).show()
+                        wpsResult = "[!] Ошибка: Для работы этого модуля требуются Root-права"
+                        isWpsRunning = false
+                        return@launch
+                    }
+
                     delay(1800)
                     wpsResult = if (accessPoint.capabilities.contains("WPS")) {
-                        "[!] ВНИМАНИЕ: WPS активен. Возможна уязвимость Pixie-Dust или бесконечного перебора PIN."
+                        "[!] ВНИМАНИЕ [Root Active]: WPS активен. Возможна уязвимость Pixie-Dust или бесконечного перебора PIN."
                     } else {
-                        "[OK] WPS отключен или не поддерживается точкой доступа."
+                        "[OK] [Root Active]: WPS отключен или не поддерживается точкой доступа."
                     }
                     isWpsRunning = false
                 }
