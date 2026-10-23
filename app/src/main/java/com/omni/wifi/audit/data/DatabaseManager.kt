@@ -8,12 +8,11 @@ import io.ktor.client.*
 import io.ktor.client.engine.android.*
 import io.ktor.client.request.*
 import io.ktor.client.statement.*
-import kotlinx.serialization.Serializable
-import kotlinx.serialization.json.Json
+import org.json.JSONArray
+import org.json.JSONObject
 import java.io.File
 import java.io.InputStream
 
-@Serializable
 data class DatabaseExport(
     val ouis: List<VendorOUI> = emptyList(),
     val credentials: List<DefaultCredential> = emptyList(),
@@ -23,7 +22,6 @@ data class DatabaseExport(
 
 object DatabaseManager {
     private val client = HttpClient(Android)
-    private val json = Json { ignoreUnknownKeys = true; coerceInputValues = true }
 
     private fun getDbFile(context: Context, filename: String): File {
         return File(context.filesDir, filename)
@@ -88,7 +86,39 @@ object DatabaseManager {
                         CveVulnerability("CVE-2023-1380", "TP-Link", "Command Injection", "Critical", "Archer AX21")
                     )
                 )
-                file.writeText(json.encodeToString(DatabaseExport.serializer(), initial))
+
+                val rootObj = JSONObject().apply {
+                    put("ouis", JSONArray().apply {
+                        initial.ouis.forEach { oui ->
+                            put(JSONObject().apply {
+                                put("oui", oui.oui)
+                                put("vendor", oui.vendor)
+                            })
+                        }
+                    })
+                    put("credentials", JSONArray().apply {
+                        initial.credentials.forEach { cred ->
+                            put(JSONObject().apply {
+                                put("vendor", cred.vendor)
+                                put("model", cred.model)
+                                put("username", cred.username)
+                                put("password", cred.password)
+                            })
+                        }
+                    })
+                    put("cves", JSONArray().apply {
+                        initial.cves.forEach { cve ->
+                            put(JSONObject().apply {
+                                put("cveId", cve.cveId)
+                                put("targetModel", cve.targetModel)
+                                put("description", cve.description)
+                                put("severity", cve.severity)
+                                put("affectedVersions", cve.affectedVersions)
+                            })
+                        }
+                    })
+                }
+                file.writeText(rootObj.toString())
             }
         } catch (_: Exception) {}
     }
@@ -128,7 +158,69 @@ object DatabaseManager {
             val file = getDbFile(context, "omni_audit_db.json")
             file.writeText(content)
 
-            val exportData = json.decodeFromString(DatabaseExport.serializer(), content)
+            val rootObj = JSONObject(content)
+            
+            val ouisList = mutableListOf<VendorOUI>()
+            val ouisJson = rootObj.optJSONArray("ouis")
+            if (ouisJson != null) {
+                for (i in 0 until ouisJson.length()) {
+                    val obj = ouisJson.getJSONObject(i)
+                    ouisList.add(VendorOUI(
+                        oui = obj.optString("oui"),
+                        vendor = obj.optString("vendor")
+                    ))
+                }
+            }
+
+            val credsList = mutableListOf<DefaultCredential>()
+            val credsJson = rootObj.optJSONArray("credentials")
+            if (credsJson != null) {
+                for (i in 0 until credsJson.length()) {
+                    val obj = credsJson.getJSONObject(i)
+                    credsList.add(DefaultCredential(
+                        vendor = obj.optString("vendor"),
+                        model = obj.optString("model"),
+                        username = obj.optString("username"),
+                        password = obj.optString("password")
+                    ))
+                }
+            }
+
+            val cvesList = mutableListOf<CveVulnerability>()
+            val cvesJson = rootObj.optJSONArray("cves")
+            if (cvesJson != null) {
+                for (i in 0 until cvesJson.length()) {
+                    val obj = cvesJson.getJSONObject(i)
+                    cvesList.add(CveVulnerability(
+                        cveId = obj.optString("cveId"),
+                        targetModel = obj.optString("targetModel"),
+                        description = obj.optString("description"),
+                        severity = obj.optString("severity"),
+                        affectedVersions = obj.optString("affectedVersions")
+                    ))
+                }
+            }
+
+            val wpsList = mutableListOf<WpsAlgorithm>()
+            val wpsJson = rootObj.optJSONArray("wpsAlgorithms")
+            if (wpsJson != null) {
+                for (i in 0 until wpsJson.length()) {
+                    val obj = wpsJson.getJSONObject(i)
+                    wpsList.add(WpsAlgorithm(
+                        name = obj.optString("name"),
+                        description = obj.optString("description"),
+                        signature = obj.optString("signature")
+                    ))
+                }
+            }
+
+            val exportData = DatabaseExport(
+                ouis = ouisList,
+                credentials = credsList,
+                cves = cvesList,
+                wpsAlgorithms = wpsList
+            )
+
             var count = 0
             if (exportData.ouis.isNotEmpty()) {
                 dao.insertOuis(exportData.ouis)
