@@ -15,11 +15,9 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.omni.wifi.audit.domain.WifiDiagnosticRunner
+import com.omni.wifi.audit.domain.diagnostic.*
 import com.omni.wifi.audit.domain.model.AccessPointInfo
 import com.omni.wifi.audit.ui.theme.AuditGradient
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.launch
 
 @Composable
 fun DetailScreen(
@@ -27,32 +25,15 @@ fun DetailScreen(
     allAccessPoints: List<AccessPointInfo> = emptyList(),
     onBack: () -> Unit
 ) {
-    val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
+    val taskState by DiagnosticEngine.taskState.collectAsState()
+    val modules = remember { DiagnosticModuleRegistry.getModules() }
 
-    // Module 1: Channel & Interference
-    var channelResult by remember { mutableStateOf<String?>(null) }
-    var isChannelRunning by remember { mutableStateOf(false) }
-    var channelJob by remember { mutableStateOf<Job?>(null) }
-
-    // Module 2: WPS Inspector & Driver
-    var wpsLogs by remember { mutableStateOf<List<String>>(emptyList()) }
-    var isWpsRunning by remember { mutableStateOf(false) }
-    var wpsJob by remember { mutableStateOf<Job?>(null) }
-
-    // Module 3: Pixie-Dust Feasibility
-    var pixieLogs by remember { mutableStateOf<List<String>>(emptyList()) }
-    var isPixieRunning by remember { mutableStateOf(false) }
-    var pixieJob by remember { mutableStateOf<Job?>(null) }
-
-    // Module 4: Gateway & Web Admin Audit
-    var gatewayLogs by remember { mutableStateOf<List<String>>(emptyList()) }
-    var isGatewayRunning by remember { mutableStateOf(false) }
-    var gatewayJob by remember { mutableStateOf<Job?>(null) }
-
-    // Module 5: Router Database CVEs
-    var cveResult by remember { mutableStateOf<String?>(null) }
-    var isCveRunning by remember { mutableStateOf(false) }
+    DisposableEffect(Unit) {
+        onDispose {
+            DiagnosticEngine.cancelCurrentTask()
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -61,16 +42,14 @@ fun DetailScreen(
             .padding(16.dp)
             .verticalScroll(rememberScrollState())
     ) {
+        // Top Bar
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
             TextButton(onClick = {
-                channelJob?.cancel()
-                wpsJob?.cancel()
-                pixieJob?.cancel()
-                gatewayJob?.cancel()
+                DiagnosticEngine.cancelCurrentTask()
                 onBack()
             }) {
                 Text(text = "← Назад", color = MaterialTheme.colorScheme.primary, fontSize = 16.sp)
@@ -93,7 +72,7 @@ fun DetailScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // AP Overview Card
+        // Target Access Point Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -108,19 +87,19 @@ fun DetailScreen(
                 )
                 Spacer(modifier = Modifier.height(6.dp))
                 Text(text = "BSSID: ${accessPoint.bssid}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-                Text(text = "Производитель: ${accessPoint.vendor ?: "Не определен"}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                Text(text = "Оборудование: ${accessPoint.vendor ?: "Не определено"}", style = MaterialTheme.typography.bodyMedium, color = Color(0xFF74C0FC))
                 Text(
-                    text = "Диапазон: ${accessPoint.band} | Канал: ${accessPoint.channel} (${accessPoint.frequency} МГц)",
+                    text = "Диапазон: ${accessPoint.band} • Канал ${accessPoint.channel} (${accessPoint.frequency} МГц)",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.Gray
                 )
                 Text(
-                    text = "Стандарт: ${accessPoint.wifiStandard} | Защита: ${accessPoint.encryptionType}",
+                    text = "Защита: ${accessPoint.encryptionType} (${accessPoint.wifiStandard})",
                     style = MaterialTheme.typography.bodyMedium,
                     color = Color.Gray
                 )
                 Text(
-                    text = "WPS: ${accessPoint.wpsDetails}",
+                    text = "Параметры WPS: ${accessPoint.wpsDetails}",
                     style = MaterialTheme.typography.bodyMedium,
                     color = if (accessPoint.isWpsSupported) Color(0xFFFFA94D) else Color.Gray
                 )
@@ -132,10 +111,21 @@ fun DetailScreen(
             }
         }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Spacer(modifier = Modifier.height(16.dp))
 
+        // Active Diagnostic Task View (if running or completed)
+        if (taskState.status != DiagnosticStatus.IDLE) {
+            ActiveTaskConsole(
+                taskState = taskState,
+                onStop = { DiagnosticEngine.cancelCurrentTask() },
+                onDismiss = { DiagnosticEngine.reset() }
+            )
+            Spacer(modifier = Modifier.height(16.dp))
+        }
+
+        // Section Title
         Text(
-            text = "ДИАГНОСТИЧЕСКИЕ ТЕСТЫ",
+            text = "ДИАГНОСТИЧЕСКИЕ МОДУЛИ (${modules.size})",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold
@@ -143,219 +133,131 @@ fun DetailScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 1. Channel and Interference Diagnostic
-        DiagnosticTextCard(
-            title = "Анализ радиоканала и эфира",
-            description = "Реальный расчет параметров радиочастотного канала, межканальной интерференции (ACI/CCI) и качества сигнала.",
-            isRunning = isChannelRunning,
-            result = channelResult,
-            onStart = {
-                channelJob?.cancel()
-                isChannelRunning = true
-                channelResult = null
-                channelJob = coroutineScope.launch {
-                    try {
-                        val result = WifiDiagnosticRunner.analyzeChannelAndSignal(accessPoint, allAccessPoints)
-                        channelResult = result
-                    } catch (e: Exception) {
-                        channelResult = "[-] Ошибка выполнения анализа: ${e.localizedMessage}"
-                    } finally {
-                        isChannelRunning = false
+        // List of Diagnostic Modules
+        Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            modules.forEach { module ->
+                val isThisRunning = taskState.isRunning && taskState.moduleId == module.id
+                val anyRunning = taskState.isRunning
+
+                ModuleExecutionCard(
+                    module = module,
+                    isRunning = isThisRunning,
+                    isBlocked = anyRunning && !isThisRunning,
+                    onLaunch = {
+                        DiagnosticEngine.runTask(
+                            context = context,
+                            module = module,
+                            target = accessPoint,
+                            allAccessPoints = allAccessPoints
+                        )
                     }
-                }
-            },
-            onStop = {
-                channelJob?.cancel()
-                isChannelRunning = false
-                channelResult = "[!] Анализ остановлен пользователем."
+                )
             }
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // 2. WPS Inspector & Driver Check
-        DiagnosticTerminalCard(
-            title = "WPS Инспектор и аудит драйвера",
-            description = "Определение параметров WPS из пакетов Beacon/Probe Response, проверка root-прав и ограничений Qualcomm qcacld-3.0.",
-            isRunning = isWpsRunning,
-            logs = wpsLogs,
-            onStart = {
-                wpsJob?.cancel()
-                isWpsRunning = true
-                wpsLogs = emptyList()
-                wpsJob = coroutineScope.launch {
-                    try {
-                        WifiDiagnosticRunner.inspectWpsAndDriver(context, accessPoint) { line ->
-                            wpsLogs = wpsLogs + line
-                        }
-                    } catch (e: Exception) {
-                        wpsLogs = wpsLogs + "[-] Ошибка выполнения: ${e.localizedMessage}"
-                    } finally {
-                        isWpsRunning = false
-                    }
-                }
-            },
-            onStop = {
-                wpsJob?.cancel()
-                isWpsRunning = false
-                wpsLogs = wpsLogs + "[!] Проверка прервана пользователем."
-            }
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // 3. Pixie-Dust Feasibility Diagnostics
-        DiagnosticTerminalCard(
-            title = "Диагностика условий Pixie-Dust",
-            description = "Анализ готовности устройства и совместимости чипсета. Не производит перебор или подбор PIN-кода.",
-            isRunning = isPixieRunning,
-            logs = pixieLogs,
-            onStart = {
-                pixieJob?.cancel()
-                isPixieRunning = true
-                pixieLogs = emptyList()
-                pixieJob = coroutineScope.launch {
-                    try {
-                        WifiDiagnosticRunner.checkPixieDustFeasibility(context, accessPoint) { line ->
-                            pixieLogs = pixieLogs + line
-                        }
-                    } catch (e: Exception) {
-                        pixieLogs = pixieLogs + "[-] Ошибка диагностики: ${e.localizedMessage}"
-                    } finally {
-                        isPixieRunning = false
-                    }
-                }
-            },
-            onStop = {
-                pixieJob?.cancel()
-                isPixieRunning = false
-                pixieLogs = pixieLogs + "[!] Проверка отменена пользователем."
-            }
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // 4. Gateway & Web Admin Audit
-        DiagnosticTerminalCard(
-            title = "Аудит сетевого шлюза и веб-админки",
-            description = "Реальное сканирование портов 80/443 шлюза при активном подключении к сети. Проверка заводских учетных записей.",
-            isRunning = isGatewayRunning,
-            logs = gatewayLogs,
-            onStart = {
-                gatewayJob?.cancel()
-                isGatewayRunning = true
-                gatewayLogs = emptyList()
-                gatewayJob = coroutineScope.launch {
-                    try {
-                        WifiDiagnosticRunner.auditGatewayAndWebAdmin(context, accessPoint) { line ->
-                            gatewayLogs = gatewayLogs + line
-                        }
-                    } catch (e: Exception) {
-                        gatewayLogs = gatewayLogs + "[-] Ошибка сетевого запроса: ${e.localizedMessage}"
-                    } finally {
-                        isGatewayRunning = false
-                    }
-                }
-            },
-            onStop = {
-                gatewayJob?.cancel()
-                isGatewayRunning = false
-                gatewayLogs = gatewayLogs + "[!] Аудит шлюза прерван пользователем."
-            }
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // 5. Router Database & CVE
-        DiagnosticTextCard(
-            title = "База уязвимостей и CVE оборудования",
-            description = "Поиск зарегистрированных уязвимостей и бюллетеней безопасности для производителя ${accessPoint.vendor ?: "устройства"}.",
-            isRunning = isCveRunning,
-            result = cveResult,
-            onStart = {
-                isCveRunning = true
-                cveResult = null
-                coroutineScope.launch {
-                    val matchingCves = accessPoint.potentialVulnerabilities.filter { it.contains("CVE") }
-                    cveResult = if (matchingCves.isNotEmpty()) {
-                        "=== ПОДТВЕРЖДЕННЫЕ CVE ДЛЯ ВЕНДОРА '${accessPoint.vendor}' ===\n" +
-                                matchingCves.joinToString("\n\n") { "• $it" } +
-                                "\n\n[i] Примечание: Уязвимость подтверждается при совпадении точной модели и версии прошивки устройства."
-                    } else {
-                        "[OK] Критические зарегистрированные CVE для '${accessPoint.vendor}' отсутствуют в локальной базе."
-                    }
-                    isCveRunning = false
-                }
-            },
-            onStop = {
-                isCveRunning = false
-            }
-        )
+        }
 
         Spacer(modifier = Modifier.height(24.dp))
     }
 }
 
 @Composable
-fun DiagnosticTextCard(
-    title: String,
-    description: String,
-    isRunning: Boolean,
-    result: String?,
-    onStart: () -> Unit,
-    onStop: () -> Unit
+fun ActiveTaskConsole(
+    taskState: DiagnosticTaskState,
+    onStop: () -> Unit,
+    onDismiss: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(10.dp)
+        colors = CardDefaults.cardColors(containerColor = Color(0xFF0F1117)),
+        shape = RoundedCornerShape(12.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(text = title, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
-            Spacer(modifier = Modifier.height(4.dp))
-            Text(text = description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            Spacer(modifier = Modifier.height(12.dp))
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onStart,
-                    enabled = !isRunning,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    if (isRunning) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Выполняется...", color = Color.White)
-                    } else {
-                        Text(text = "Запустить тест", color = Color.White)
-                    }
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = taskState.moduleTitle,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White,
+                        fontSize = 15.sp
+                    )
+                    Text(
+                        text = "Этап: ${taskState.currentStage}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color(0xFF74C0FC)
+                    )
                 }
+                StatusBadge(status = taskState.status)
+            }
 
-                if (isRunning) {
-                    OutlinedButton(
-                        onClick = onStop,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF6B6B))
-                    ) {
-                        Text(text = "Остановить")
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (taskState.isRunning) {
+                LinearProgressIndicator(
+                    modifier = Modifier.fillMaxWidth().height(4.dp),
+                    color = MaterialTheme.colorScheme.primary,
+                    trackColor = Color(0xFF1E222D)
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+            }
+
+            // Terminal Logs
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 120.dp, max = 220.dp)
+                    .background(Color(0xFF08090C), shape = RoundedCornerShape(8.dp))
+                    .padding(10.dp)
+            ) {
+                val scrollState = rememberScrollState()
+                LaunchedEffect(taskState.logs.size) {
+                    scrollState.animateScrollTo(scrollState.maxValue)
+                }
+                Column(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .verticalScroll(scrollState)
+                ) {
+                    taskState.logs.forEach { logLine ->
+                        Text(
+                            text = logLine,
+                            fontFamily = FontFamily.Monospace,
+                            fontSize = 11.sp,
+                            color = when {
+                                logLine.contains("[-]") || logLine.contains("[!]") || logLine.contains("Ошибка") -> Color(0xFFFF8787)
+                                logLine.contains("[+]") || logLine.contains("[OK]") -> Color(0xFF69DB7C)
+                                logLine.contains("[i]") -> Color(0xFF74C0FC)
+                                else -> Color(0xFFD0D7DE)
+                            }
+                        )
                     }
                 }
             }
 
-            if (result != null) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color(0xFF101014), shape = RoundedCornerShape(8.dp))
-                        .padding(12.dp)
-                ) {
-                    Text(
-                        text = result,
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (result.contains("[!]") || result.contains("Критическ")) Color(0xFFFF8787) else Color(0xFF69DB7C),
-                        fontFamily = FontFamily.Monospace
-                    )
+            Spacer(modifier = Modifier.height(12.dp))
+
+            // Action Buttons
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.End,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                if (taskState.isRunning) {
+                    Button(
+                        onClick = onStop,
+                        colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFE03131))
+                    ) {
+                        Text(text = "Остановить", color = Color.White, fontSize = 12.sp)
+                    }
+                } else {
+                    OutlinedButton(
+                        onClick = onDismiss,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color.LightGray)
+                    ) {
+                        Text(text = "Скрыть панель", fontSize = 12.sp)
+                    }
                 }
             }
         }
@@ -363,13 +265,11 @@ fun DiagnosticTextCard(
 }
 
 @Composable
-fun DiagnosticTerminalCard(
-    title: String,
-    description: String,
+fun ModuleExecutionCard(
+    module: IDiagnosticModule,
     isRunning: Boolean,
-    logs: List<String>,
-    onStart: () -> Unit,
-    onStop: () -> Unit
+    isBlocked: Boolean,
+    onLaunch: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -377,71 +277,83 @@ fun DiagnosticTerminalCard(
         shape = RoundedCornerShape(10.dp)
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Text(text = title, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 16.sp)
+            Text(text = module.title, fontWeight = FontWeight.Bold, color = Color.White, fontSize = 15.sp)
             Spacer(modifier = Modifier.height(4.dp))
-            Text(text = description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-            Spacer(modifier = Modifier.height(12.dp))
+            Text(text = module.description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+            Spacer(modifier = Modifier.height(8.dp))
 
+            // Badges for requirements
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = onStart,
-                    enabled = !isRunning,
-                    modifier = Modifier.weight(1f),
-                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-                ) {
-                    if (isRunning) {
-                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
-                        Spacer(modifier = Modifier.width(8.dp))
-                        Text(text = "Выполняется...", color = Color.White)
-                    } else {
-                        Text(text = "Запустить диагностику", color = Color.White)
-                    }
-                }
-
-                if (isRunning) {
-                    OutlinedButton(
-                        onClick = onStop,
-                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF6B6B))
-                    ) {
-                        Text(text = "Остановить")
-                    }
-                }
+                RequirementBadge(
+                    label = if (module.requiresRoot) "Root (su): Да" else "Без Root",
+                    isWarning = module.requiresRoot
+                )
+                RequirementBadge(
+                    label = if (module.requiresConnection) "Сеть: Подключение" else "Сеть: Радиоэфир",
+                    isWarning = module.requiresConnection
+                )
             }
 
-            if (logs.isNotEmpty() || isRunning) {
-                Spacer(modifier = Modifier.height(12.dp))
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(min = 100.dp, max = 260.dp)
-                        .background(Color(0xFF0C0C10), shape = RoundedCornerShape(8.dp))
-                        .padding(10.dp)
-                ) {
-                    val scrollState = rememberScrollState()
-                    LaunchedEffect(logs.size) {
-                        scrollState.animateScrollTo(scrollState.maxValue)
-                    }
-                    Column(
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .verticalScroll(scrollState)
-                    ) {
-                        logs.forEach { logLine ->
-                            Text(
-                                text = logLine,
-                                fontFamily = FontFamily.Monospace,
-                                fontSize = 11.sp,
-                                color = when {
-                                    logLine.contains("[-]") || logLine.contains("[!]") -> Color(0xFFFF8787)
-                                    logLine.contains("[+]") || logLine.contains("[OK]") -> Color(0xFF69DB7C)
-                                    logLine.contains("[i]") -> Color(0xFF74C0FC)
-                                    else -> Color(0xFFE2E8F0)
-                                }
-                            )
-                        }
-                    }
+            Spacer(modifier = Modifier.height(12.dp))
+
+            Button(
+                onClick = onLaunch,
+                enabled = !isRunning && !isBlocked,
+                modifier = Modifier.fillMaxWidth(),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                if (isRunning) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(text = "Выполняется...", color = Color.White)
+                } else {
+                    Text(text = "Запустить диагностику", color = Color.White)
                 }
             }
         }
+    }
+}
+
+@Composable
+fun RequirementBadge(label: String, isWarning: Boolean) {
+    Surface(
+        color = if (isWarning) Color(0xFF2C1B14) else Color(0xFF16231C),
+        shape = RoundedCornerShape(4.dp)
+    ) {
+        Text(
+            text = label,
+            color = if (isWarning) Color(0xFFFFA94D) else Color(0xFF69DB7C),
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Medium,
+            modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp)
+        )
+    }
+}
+
+@Composable
+fun StatusBadge(status: DiagnosticStatus) {
+    val (bgColor, textColor, label) = when (status) {
+        DiagnosticStatus.IDLE -> Triple(Color.DarkGray, Color.White, "IDLE")
+        DiagnosticStatus.RUNNING -> Triple(Color(0xFF1971C2), Color.White, "В ПРОЦЕССЕ")
+        DiagnosticStatus.SUCCESS -> Triple(Color(0xFF2B8A3E), Color.White, "SUCCESS")
+        DiagnosticStatus.FAILED -> Triple(Color(0xFFC92A2A), Color.White, "FAILED")
+        DiagnosticStatus.UNSUPPORTED -> Triple(Color(0xFFE8590C), Color.White, "UNSUPPORTED")
+        DiagnosticStatus.PERMISSION_DENIED -> Triple(Color(0xFFD6336C), Color.White, "DENIED")
+        DiagnosticStatus.TIMEOUT -> Triple(Color(0xFFE03131), Color.White, "TIMEOUT")
+        DiagnosticStatus.CANCELLED -> Triple(Color(0xFF495057), Color.White, "CANCELLED")
+    }
+
+    Surface(
+        color = bgColor,
+        shape = RoundedCornerShape(6.dp)
+    ) {
+        Text(
+            text = label,
+            color = textColor,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold,
+            modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+        )
     }
 }

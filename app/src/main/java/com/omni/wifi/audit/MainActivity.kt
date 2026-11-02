@@ -23,6 +23,8 @@ import com.omni.wifi.audit.data.DatabaseManager
 import com.omni.wifi.audit.data.DataInitializer
 import com.omni.wifi.audit.domain.VulnerabilityAnalyzer
 import com.omni.wifi.audit.domain.model.AccessPointInfo
+import com.omni.wifi.audit.domain.scanner.ScanTriggerResult
+import com.omni.wifi.audit.domain.scanner.WifiScannerEngine
 import com.omni.wifi.audit.ui.DetailScreen
 import com.omni.wifi.audit.ui.MainScreen
 import com.omni.wifi.audit.ui.theme.OmniWifiAuditTheme
@@ -48,7 +50,7 @@ class MainActivity : ComponentActivity() {
             val wifiState = permissions[Manifest.permission.ACCESS_WIFI_STATE] ?: false
 
             if (fineLocation || coarseLocation || wifiState) {
-                startWifiScan()
+                checkAndStartScan()
             } else {
                 Toast.makeText(this, "Требуются разрешения на геолокацию и Wi-Fi для сканирования сетей", Toast.LENGTH_LONG).show()
                 isScanningState.value = false
@@ -192,90 +194,46 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val scannerEngine by lazy { WifiScannerEngine(this) }
+
     private fun checkAndStartScan() {
         isScanningState.value = true
 
-        try {
-            if (!wifiManager.isWifiEnabled) {
-                Toast.makeText(this, "Пожалуйста, включите Wi-Fi на устройстве.", Toast.LENGTH_LONG).show()
-                isScanningState.value = false
-                return
+        val triggerResult = scannerEngine.triggerScan()
+        when (triggerResult) {
+            is ScanTriggerResult.Started -> {
+                // Wait for SCAN_RESULTS_AVAILABLE_ACTION broadcast
             }
-
-            val hasFineLoc = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
-            val hasCoarseLoc = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
-            val hasWifiState = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_WIFI_STATE) == PackageManager.PERMISSION_GRANTED
-
-            if (!hasFineLoc || !hasCoarseLoc || !hasWifiState) {
-                val permissionsToRequest = mutableListOf(
-                    Manifest.permission.ACCESS_WIFI_STATE,
-                    Manifest.permission.CHANGE_WIFI_STATE,
-                    Manifest.permission.ACCESS_FINE_LOCATION,
-                    Manifest.permission.ACCESS_COARSE_LOCATION
-                )
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                    permissionsToRequest.add(Manifest.permission.NEARBY_WIFI_DEVICES)
-                }
-                requestPermissionLauncher.launch(permissionsToRequest.toTypedArray())
-                return
-            }
-
-            val locationManager = getSystemService(Context.LOCATION_SERVICE) as LocationManager
-            val isGpsEnabled = try { locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) } catch (_: Exception) { true }
-            val isNetworkLocationEnabled = try { locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { true }
-
-            if (!isGpsEnabled && !isNetworkLocationEnabled) {
-                Toast.makeText(this, "Служба геолокации (GPS) отключена. Включите её для обнаружения Wi-Fi сетей.", Toast.LENGTH_LONG).show()
-            }
-
-            startWifiScan()
-        } catch (e: Exception) {
-            Toast.makeText(this, "Ошибка проверки разрешений/геолокации: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-            isScanningState.value = false
-        }
-    }
-
-    private fun startWifiScan() {
-        try {
-            val success = wifiManager.startScan()
-            if (!success) {
-                // Throttled by Android OS (max 4 scans per 2 minutes in foreground)
+            is ScanTriggerResult.Throttled -> {
                 Toast.makeText(this, "Ограничение Android (Scan Throttling). Отображаются кэшированные данные.", Toast.LENGTH_SHORT).show()
                 fetchScanResults()
             }
-        } catch (e: Exception) {
-            Toast.makeText(this, "Ошибка сканирования: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
-            isScanningState.value = false
-            fetchScanResults()
+            is ScanTriggerResult.WifiDisabled -> {
+                Toast.makeText(this, "Пожалуйста, включите Wi-Fi на устройстве.", Toast.LENGTH_LONG).show()
+                isScanningState.value = false
+            }
+            is ScanTriggerResult.PermissionRequired -> {
+                requestPermissionLauncher.launch(triggerResult.permissions.toTypedArray())
+            }
+            is ScanTriggerResult.Error -> {
+                Toast.makeText(this, "Ошибка запуска сканирования: ${triggerResult.message}", Toast.LENGTH_SHORT).show()
+                isScanningState.value = false
+                fetchScanResults()
+            }
         }
     }
 
     private fun fetchScanResults() {
         lifecycleScope.launch(Dispatchers.IO) {
             try {
-                val results = try {
-                    if (ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                        ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED ||
-                        ContextCompat.checkSelfPermission(this@MainActivity, Manifest.permission.ACCESS_WIFI_STATE) == PackageManager.PERMISSION_GRANTED) {
-                        wifiManager.scanResults ?: emptyList()
-                    } else {
-                        emptyList()
-                    }
-                } catch (e: Exception) {
-                    emptyList()
-                }
-
-                val analyzedList = results.map { scanResult ->
-                    analyzer.analyzeAccessPoint(scanResult)
-                }.sortedByDescending { it.signalLevel }
-
+                val analyzedList = scannerEngine.getScanResults()
                 withContext(Dispatchers.Main) {
                     scanResultsState.value = analyzedList
                     isScanningState.value = false
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "Ошибка получения результатов сканирования: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+                    Toast.makeText(this@MainActivity, "Ошибка получения результатов: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
                     isScanningState.value = false
                 }
             }
