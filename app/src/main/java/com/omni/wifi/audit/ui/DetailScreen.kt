@@ -1,6 +1,5 @@
 package com.omni.wifi.audit.ui
 
-import android.widget.Toast
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -16,34 +15,42 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.omni.wifi.audit.domain.WifiDiagnosticRunner
 import com.omni.wifi.audit.domain.model.AccessPointInfo
 import com.omni.wifi.audit.ui.theme.AuditGradient
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 
 @Composable
 fun DetailScreen(
     accessPoint: AccessPointInfo,
+    allAccessPoints: List<AccessPointInfo> = emptyList(),
     onBack: () -> Unit
 ) {
     val coroutineScope = rememberCoroutineScope()
     val context = LocalContext.current
-    
-    // Test states
-    var passiveResult by remember { mutableStateOf<String?>(null) }
-    var isPassiveRunning by remember { mutableStateOf(false) }
 
-    var webAdminResult by remember { mutableStateOf<String?>(null) }
-    var isWebAdminRunning by remember { mutableStateOf(false) }
+    // Module 1: Channel & Interference
+    var channelResult by remember { mutableStateOf<String?>(null) }
+    var isChannelRunning by remember { mutableStateOf(false) }
+    var channelJob by remember { mutableStateOf<Job?>(null) }
 
-    var pinLogs by remember { mutableStateOf<List<String>>(emptyList()) }
-    var isPinRunning by remember { mutableStateOf(false) }
+    // Module 2: WPS Inspector & Driver
+    var wpsLogs by remember { mutableStateOf<List<String>>(emptyList()) }
+    var isWpsRunning by remember { mutableStateOf(false) }
+    var wpsJob by remember { mutableStateOf<Job?>(null) }
 
+    // Module 3: Pixie-Dust Feasibility
     var pixieLogs by remember { mutableStateOf<List<String>>(emptyList()) }
     var isPixieRunning by remember { mutableStateOf(false) }
+    var pixieJob by remember { mutableStateOf<Job?>(null) }
 
+    // Module 4: Gateway & Web Admin Audit
+    var gatewayLogs by remember { mutableStateOf<List<String>>(emptyList()) }
+    var isGatewayRunning by remember { mutableStateOf(false) }
+    var gatewayJob by remember { mutableStateOf<Job?>(null) }
+
+    // Module 5: Router Database CVEs
     var cveResult by remember { mutableStateOf<String?>(null) }
     var isCveRunning by remember { mutableStateOf(false) }
 
@@ -59,11 +66,17 @@ fun DetailScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            TextButton(onClick = onBack) {
-                Text(text = "← Назад", color = MaterialTheme.colorScheme.primary)
+            TextButton(onClick = {
+                channelJob?.cancel()
+                wpsJob?.cancel()
+                pixieJob?.cancel()
+                gatewayJob?.cancel()
+                onBack()
+            }) {
+                Text(text = "← Назад", color = MaterialTheme.colorScheme.primary, fontSize = 16.sp)
             }
             Text(
-                text = "ДЕТАЛИ СЕТИ",
+                text = "ДИАГНОСТИКА СЕТИ",
                 style = MaterialTheme.typography.titleMedium.copy(fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp),
                 color = Color.White
             )
@@ -80,26 +93,49 @@ fun DetailScreen(
 
         Spacer(modifier = Modifier.height(16.dp))
 
-        // AP Info Card
+        // AP Overview Card
         Card(
             modifier = Modifier.fillMaxWidth(),
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
             shape = RoundedCornerShape(12.dp)
         ) {
             Column(modifier = Modifier.padding(16.dp)) {
-                Text(text = accessPoint.ssid, style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold, color = Color.White)
-                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = accessPoint.ssid,
+                    style = MaterialTheme.typography.headlineSmall,
+                    fontWeight = FontWeight.Bold,
+                    color = Color.White
+                )
+                Spacer(modifier = Modifier.height(6.dp))
                 Text(text = "BSSID: ${accessPoint.bssid}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-                Text(text = "Vendor: ${accessPoint.vendor ?: "Unknown"}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-                Text(text = "Standard: ${accessPoint.wifiStandard} | Шифрование: ${accessPoint.encryptionType}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
-                Text(text = "Уровень сигнала: ${accessPoint.signalLevel} dBm | Частота: ${accessPoint.frequency} MHz", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                Text(text = "Производитель: ${accessPoint.vendor ?: "Не определен"}", style = MaterialTheme.typography.bodyMedium, color = Color.Gray)
+                Text(
+                    text = "Диапазон: ${accessPoint.band} | Канал: ${accessPoint.channel} (${accessPoint.frequency} МГц)",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Gray
+                )
+                Text(
+                    text = "Стандарт: ${accessPoint.wifiStandard} | Защита: ${accessPoint.encryptionType}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Gray
+                )
+                Text(
+                    text = "WPS: ${accessPoint.wpsDetails}",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = if (accessPoint.isWpsSupported) Color(0xFFFFA94D) else Color.Gray
+                )
+                Text(
+                    text = "Уровень сигнала: ${accessPoint.signalLevel} дБм",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = Color.Gray
+                )
             }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
 
         Text(
-            text = "МОДУЛИ АУДИТА (Ручной запуск)",
+            text = "ДИАГНОСТИЧЕСКИЕ ТЕСТЫ",
             style = MaterialTheme.typography.titleSmall,
             color = MaterialTheme.colorScheme.primary,
             fontWeight = FontWeight.Bold
@@ -107,184 +143,167 @@ fun DetailScreen(
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 1. Passive Analysis
-        AuditButtonSection(
-            title = "Пассивный анализ",
-            description = "Безопасное чтение Wi-Fi эфира без отправки пакетов на роутер.",
-            isRunning = isPassiveRunning,
-            result = passiveResult,
-            onClick = {
-                coroutineScope.launch {
-                    isPassiveRunning = true
-                    passiveResult = null
-                    delay(1200)
-                    passiveResult = "[OK] Каналы стабильны. Скрытые SSID не обнаружены. Шум/интерференция в пределах нормы."
-                    isPassiveRunning = false
-                }
-            }
-        )
-
-        Spacer(modifier = Modifier.height(12.dp))
-
-        // 2. Web Admin Test
-        AuditButtonSection(
-            title = "Тест веб-админки",
-            description = "Проверка стандартных логинов и паролей панели управления (admin/admin).",
-            isRunning = isWebAdminRunning,
-            result = webAdminResult,
-            onClick = {
-                coroutineScope.launch {
-                    isWebAdminRunning = true
-                    webAdminResult = null
-                    delay(1500)
-                    webAdminResult = if (accessPoint.potentialVulnerabilities.any { it.contains("credentials") }) {
-                        "[!] ВНИМАНИЕ: Обнаружена потенциальная уязвимость дефолтных учетных данных (admin/admin) на шлюзе."
-                    } else {
-                        "[OK] Стандартные дефолтные учетные данные не обнаружены или панель защищена."
+        // 1. Channel and Interference Diagnostic
+        DiagnosticTextCard(
+            title = "Анализ радиоканала и эфира",
+            description = "Реальный расчет параметров радиочастотного канала, межканальной интерференции (ACI/CCI) и качества сигнала.",
+            isRunning = isChannelRunning,
+            result = channelResult,
+            onStart = {
+                channelJob?.cancel()
+                isChannelRunning = true
+                channelResult = null
+                channelJob = coroutineScope.launch {
+                    try {
+                        val result = WifiDiagnosticRunner.analyzeChannelAndSignal(accessPoint, allAccessPoints)
+                        channelResult = result
+                    } catch (e: Exception) {
+                        channelResult = "[-] Ошибка выполнения анализа: ${e.localizedMessage}"
+                    } finally {
+                        isChannelRunning = false
                     }
-                    isWebAdminRunning = false
                 }
+            },
+            onStop = {
+                channelJob?.cancel()
+                isChannelRunning = false
+                channelResult = "[!] Анализ остановлен пользователем."
             }
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 3. Button 1: "Проверка стандартных PIN"
-        TerminalAuditSection(
-            title = "Проверка стандартных PIN",
-            description = "Перебор известных заводских PIN-кодов (TP-Link, ASUS, Huawei, D-Link и др.) из встроенной базы данных через системные вызовы WPA. Показывает реальный статус каждой попытки.",
-            isRunning = isPinRunning,
-            logs = pinLogs,
-            onClick = {
-                coroutineScope.launch {
-                    isPinRunning = true
-                    pinLogs = listOf("[*] Запуск проверки стандартных PIN для BSSID: ${accessPoint.bssid}...")
-                    
-                    val command = "echo '[*] Initializing root su shell...'; " +
-                                  "id; " +
-                                  "ip link show; " +
-                                  "echo '[*] Testing WPS PINs from database (TP-Link / ASUS / D-Link)...'; " +
-                                  "for pin in 12345670 11223344 00000000 12345678 50624164; do " +
-                                  "echo '[*] Sending PIN: \$pin to ${accessPoint.bssid}'; " +
-                                  "wpa_cli -i wlan0 wps_pin ${accessPoint.bssid} \$pin 2>&1 || echo '[-] wpa_cli command status: ok/simulated'; " +
-                                  "sleep 0.4; " +
-                                  "done; " +
-                                  "echo '[+] WPS Standard PIN check session finished.'"
-
-                    withContext(Dispatchers.IO) {
-                        try {
-                            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-                            val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
-                            var line = reader.readLine()
-                            while (line != null) {
-                                val currentLine = line
-                                withContext(Dispatchers.Main) {
-                                    pinLogs = pinLogs + currentLine
-                                }
-                                line = reader.readLine()
-                            }
-                            process.waitFor()
-                        } catch (e: Exception) {
-                            withContext(Dispatchers.Main) {
-                                pinLogs = pinLogs + "[!] Ошибка выполнения su: ${e.localizedMessage}" +
-                                          "\n[i] Симуляция выполнения через Java Runtime:" +
-                                          "\n[+] PIN 12345670 -> Timeout / No association" +
-                                          "\n[+] PIN 11223344 -> Rejected" +
-                                          "\n[+] PIN 00000000 -> Accepted state / PIN verified"
-                            }
+        // 2. WPS Inspector & Driver Check
+        DiagnosticTerminalCard(
+            title = "WPS Инспектор и аудит драйвера",
+            description = "Определение параметров WPS из пакетов Beacon/Probe Response, проверка root-прав и ограничений Qualcomm qcacld-3.0.",
+            isRunning = isWpsRunning,
+            logs = wpsLogs,
+            onStart = {
+                wpsJob?.cancel()
+                isWpsRunning = true
+                wpsLogs = emptyList()
+                wpsJob = coroutineScope.launch {
+                    try {
+                        WifiDiagnosticRunner.inspectWpsAndDriver(context, accessPoint) { line ->
+                            wpsLogs = wpsLogs + line
                         }
+                    } catch (e: Exception) {
+                        wpsLogs = wpsLogs + "[-] Ошибка выполнения: ${e.localizedMessage}"
+                    } finally {
+                        isWpsRunning = false
                     }
-                    isPinRunning = false
                 }
+            },
+            onStop = {
+                wpsJob?.cancel()
+                isWpsRunning = false
+                wpsLogs = wpsLogs + "[!] Проверка прервана пользователем."
             }
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 4. Button 2: "Pixie-Dust атака"
-        TerminalAuditSection(
-            title = "Pixie-Dust атака",
-            description = "Быстрое вычисление WPS PIN-кода на основе уязвимости чипсетов (Ralink, Realtek, Broadcom) без полного перебора. Требует Root-прав.",
+        // 3. Pixie-Dust Feasibility Diagnostics
+        DiagnosticTerminalCard(
+            title = "Диагностика условий Pixie-Dust",
+            description = "Анализ готовности устройства и совместимости чипсета. Не производит перебор или подбор PIN-кода.",
             isRunning = isPixieRunning,
             logs = pixieLogs,
-            onClick = {
-                coroutineScope.launch {
-                    isPixieRunning = true
-                    pixieLogs = listOf("[*] Инициализация Pixie-Dust атаки для ${accessPoint.bssid} (${accessPoint.ssid})...")
-
-                    val command = "echo '[*] Checking root privileges (su)...'; " +
-                                  "id; " +
-                                  "echo '[*] Scanning Wi-Fi interface capabilities...'; " +
-                                  "iw dev 2>&1 || ifconfig; " +
-                                  "echo '[*] Analyzing chipset vendor: ${accessPoint.vendor}'; " +
-                                  "echo '[*] Capturing WPS EAP-Failure / M1-M4 packets...'; " +
-                                  "for i in 1 2 3; do " +
-                                  "echo '[*] Pixie-Dust probe round \$i...'; " +
-                                  "sleep 0.5; " +
-                                  "done; " +
-                                  "echo '[+] PKE, PKR, E-Hash1, E-Hash2 extracted successfully!'; " +
-                                  "echo '[+] WPS PIN successfully computed via Pixie-Dust algorithm!';"
-
-                    withContext(Dispatchers.IO) {
-                        try {
-                            val process = Runtime.getRuntime().exec(arrayOf("su", "-c", command))
-                            val reader = java.io.BufferedReader(java.io.InputStreamReader(process.inputStream))
-                            var line = reader.readLine()
-                            while (line != null) {
-                                val currentLine = line
-                                withContext(Dispatchers.Main) {
-                                    pixieLogs = pixieLogs + currentLine
-                                }
-                                line = reader.readLine()
-                            }
-                            process.waitFor()
-                        } catch (e: Exception) {
-                            withContext(Dispatchers.Main) {
-                                pixieLogs = pixieLogs + "[!] Ошибка выполнения su: ${e.localizedMessage}" +
-                                            "\n[i] Симуляция Pixie-Dust вычисления:" +
-                                            "\n[+] Chipset identified: Realtek / Ralink vulnerable" +
-                                            "\n[+] Nonces and hashes captured." +
-                                            "\n[!] УСПЕХ: WPS PIN вычислен: 12345670"
-                            }
+            onStart = {
+                pixieJob?.cancel()
+                isPixieRunning = true
+                pixieLogs = emptyList()
+                pixieJob = coroutineScope.launch {
+                    try {
+                        WifiDiagnosticRunner.checkPixieDustFeasibility(context, accessPoint) { line ->
+                            pixieLogs = pixieLogs + line
                         }
+                    } catch (e: Exception) {
+                        pixieLogs = pixieLogs + "[-] Ошибка диагностики: ${e.localizedMessage}"
+                    } finally {
+                        isPixieRunning = false
                     }
-                    isPixieRunning = false
                 }
+            },
+            onStop = {
+                pixieJob?.cancel()
+                isPixieRunning = false
+                pixieLogs = pixieLogs + "[!] Проверка отменена пользователем."
             }
         )
 
         Spacer(modifier = Modifier.height(12.dp))
 
-        // 5. WAN/CVE Check
-        AuditButtonSection(
-            title = "WAN/CVE проверка",
-            description = "Поиск известного оборудования по MAC-адресу (BSSID) в оффлайн-базе уязвимостей CVE.",
+        // 4. Gateway & Web Admin Audit
+        DiagnosticTerminalCard(
+            title = "Аудит сетевого шлюза и веб-админки",
+            description = "Реальное сканирование портов 80/443 шлюза при активном подключении к сети. Проверка заводских учетных записей.",
+            isRunning = isGatewayRunning,
+            logs = gatewayLogs,
+            onStart = {
+                gatewayJob?.cancel()
+                isGatewayRunning = true
+                gatewayLogs = emptyList()
+                gatewayJob = coroutineScope.launch {
+                    try {
+                        WifiDiagnosticRunner.auditGatewayAndWebAdmin(context, accessPoint) { line ->
+                            gatewayLogs = gatewayLogs + line
+                        }
+                    } catch (e: Exception) {
+                        gatewayLogs = gatewayLogs + "[-] Ошибка сетевого запроса: ${e.localizedMessage}"
+                    } finally {
+                        isGatewayRunning = false
+                    }
+                }
+            },
+            onStop = {
+                gatewayJob?.cancel()
+                isGatewayRunning = false
+                gatewayLogs = gatewayLogs + "[!] Аудит шлюза прерван пользователем."
+            }
+        )
+
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // 5. Router Database & CVE
+        DiagnosticTextCard(
+            title = "База уязвимостей и CVE оборудования",
+            description = "Поиск зарегистрированных уязвимостей и бюллетеней безопасности для производителя ${accessPoint.vendor ?: "устройства"}.",
             isRunning = isCveRunning,
             result = cveResult,
-            onClick = {
+            onStart = {
+                isCveRunning = true
+                cveResult = null
                 coroutineScope.launch {
-                    isCveRunning = true
-                    cveResult = null
-                    delay(1400)
-                    cveResult = if (accessPoint.potentialVulnerabilities.any { it.contains("CVE") }) {
-                        "[!] НАЙДЕНЫ CVE:\n" + accessPoint.potentialVulnerabilities.filter { it.contains("CVE") || it.contains("High") }.joinToString("\n") { "• $it" }
+                    val matchingCves = accessPoint.potentialVulnerabilities.filter { it.contains("CVE") }
+                    cveResult = if (matchingCves.isNotEmpty()) {
+                        "=== ПОДТВЕРЖДЕННЫЕ CVE ДЛЯ ВЕНДОРА '${accessPoint.vendor}' ===\n" +
+                                matchingCves.joinToString("\n\n") { "• $it" } +
+                                "\n\n[i] Примечание: Уязвимость подтверждается при совпадении точной модели и версии прошивки устройства."
                     } else {
-                        "[OK] Актуальные критические CVE для вендора '${accessPoint.vendor}' не обнаружены в локальной базе."
+                        "[OK] Критические зарегистрированные CVE для '${accessPoint.vendor}' отсутствуют в локальной базе."
                     }
                     isCveRunning = false
                 }
+            },
+            onStop = {
+                isCveRunning = false
             }
         )
+
+        Spacer(modifier = Modifier.height(24.dp))
     }
 }
 
 @Composable
-fun AuditButtonSection(
+fun DiagnosticTextCard(
     title: String,
     description: String,
     isRunning: Boolean,
     result: String?,
-    onClick: () -> Unit
+    onStart: () -> Unit,
+    onStop: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -297,18 +316,29 @@ fun AuditButtonSection(
             Text(text = description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
 
-            Button(
-                onClick = onClick,
-                enabled = !isRunning,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-            ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onStart,
+                    enabled = !isRunning,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    if (isRunning) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = "Выполняется...", color = Color.White)
+                    } else {
+                        Text(text = "Запустить тест", color = Color.White)
+                    }
+                }
+
                 if (isRunning) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = "Выполнение...", color = Color.White)
-                } else {
-                    Text(text = "Запустить $title", color = Color.White)
+                    OutlinedButton(
+                        onClick = onStop,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF6B6B))
+                    ) {
+                        Text(text = "Остановить")
+                    }
                 }
             }
 
@@ -323,7 +353,8 @@ fun AuditButtonSection(
                     Text(
                         text = result,
                         style = MaterialTheme.typography.bodySmall,
-                        color = if (result.contains("[!]")) Color(0xFFFF6B6B) else Color(0xFF51CF66)
+                        color = if (result.contains("[!]") || result.contains("Критическ")) Color(0xFFFF8787) else Color(0xFF69DB7C),
+                        fontFamily = FontFamily.Monospace
                     )
                 }
             }
@@ -332,12 +363,13 @@ fun AuditButtonSection(
 }
 
 @Composable
-fun TerminalAuditSection(
+fun DiagnosticTerminalCard(
     title: String,
     description: String,
     isRunning: Boolean,
     logs: List<String>,
-    onClick: () -> Unit
+    onStart: () -> Unit,
+    onStop: () -> Unit
 ) {
     Card(
         modifier = Modifier.fillMaxWidth(),
@@ -350,28 +382,38 @@ fun TerminalAuditSection(
             Text(text = description, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
             Spacer(modifier = Modifier.height(12.dp))
 
-            Button(
-                onClick = onClick,
-                enabled = !isRunning,
-                modifier = Modifier.fillMaxWidth(),
-                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
-            ) {
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Button(
+                    onClick = onStart,
+                    enabled = !isRunning,
+                    modifier = Modifier.weight(1f),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                ) {
+                    if (isRunning) {
+                        CircularProgressIndicator(modifier = Modifier.size(16.dp), color = Color.White, strokeWidth = 2.dp)
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text(text = "Выполняется...", color = Color.White)
+                    } else {
+                        Text(text = "Запустить диагностику", color = Color.White)
+                    }
+                }
+
                 if (isRunning) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), color = Color.White, strokeWidth = 2.dp)
-                    Spacer(modifier = Modifier.width(8.dp))
-                    Text(text = "Выполнение (su)...", color = Color.White)
-                } else {
-                    Text(text = "Запустить $title", color = Color.White)
+                    OutlinedButton(
+                        onClick = onStop,
+                        colors = ButtonDefaults.outlinedButtonColors(contentColor = Color(0xFFFF6B6B))
+                    ) {
+                        Text(text = "Остановить")
+                    }
                 }
             }
 
             if (logs.isNotEmpty() || isRunning) {
                 Spacer(modifier = Modifier.height(12.dp))
-                // Terminal Log View
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .heightIn(min = 100.dp, max = 220.dp)
+                        .heightIn(min = 100.dp, max = 260.dp)
                         .background(Color(0xFF0C0C10), shape = RoundedCornerShape(8.dp))
                         .padding(10.dp)
                 ) {
@@ -390,8 +432,9 @@ fun TerminalAuditSection(
                                 fontFamily = FontFamily.Monospace,
                                 fontSize = 11.sp,
                                 color = when {
-                                    logLine.contains("[!]") || logLine.contains("[-] ") -> Color(0xFFFF6B6B)
-                                    logLine.contains("[+]") || logLine.contains("[OK]") -> Color(0xFF51CF66)
+                                    logLine.contains("[-]") || logLine.contains("[!]") -> Color(0xFFFF8787)
+                                    logLine.contains("[+]") || logLine.contains("[OK]") -> Color(0xFF69DB7C)
+                                    logLine.contains("[i]") -> Color(0xFF74C0FC)
                                     else -> Color(0xFFE2E8F0)
                                 }
                             )

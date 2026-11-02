@@ -203,7 +203,35 @@ fun AccessPointCard(ap: AccessPointInfo, onClick: () -> Unit) {
             Column(modifier = Modifier.weight(1f)) {
                 Text(text = ap.ssid, fontWeight = FontWeight.Bold, color = Color.White)
                 Text(text = ap.bssid, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                Text(text = "${ap.vendor} | ${ap.wifiStandard} | ${ap.encryptionType}", style = MaterialTheme.typography.bodySmall, color = Color.Gray)
+                Text(
+                    text = "${ap.band} • Канал ${ap.channel} (${ap.frequency} МГц)",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = Color(0xFF74C0FC)
+                )
+                Row(
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "${ap.vendor ?: "Неизвестный"} | ${ap.encryptionType}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.LightGray
+                    )
+                    if (ap.isWpsSupported) {
+                        Surface(
+                            color = Color(0xFFE8590C),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = "WPS",
+                                color = Color.White,
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
             }
 
             if (ap.potentialVulnerabilities.isNotEmpty()) {

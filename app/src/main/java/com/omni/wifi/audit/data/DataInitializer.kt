@@ -68,5 +68,11 @@ object DataInitializer {
             CveVulnerability("CVE-2022-35805", "ASUS", "Remote Code Execution", "Critical", "RT-AC68U < 3.0.0.4"),
             CveVulnerability("CVE-2023-1380", "TP-Link", "Command Injection", "Critical", "Archer AX21")
         ))
+
+        dao.insertWpsAlgorithms(listOf(
+            WpsAlgorithm(name = "Pixie-Dust PRNG Weakness", description = "Уязвимость недостаточной энтропии E-S1/E-S2 в чипсетах Realtek (RTL8196C) и Ralink (RT3050/RT5350). В современных ревизиях устранена.", signature = "Realtek/Ralink"),
+            WpsAlgorithm(name = "WPS Rate-Limiting & AP Lockout", description = "Аппаратная или программная блокировка WPS после 3-5 попыток (Keenetic, ASUS, TP-Link с новыми прошивками).", signature = "Keenetic/ASUS"),
+            WpsAlgorithm(name = "ComputePIN / Default MAC Derivation", description = "Историческая генерация заводских PIN по MAC-адресу (устаревшие ревизии D-Link DIR-300/615, TP-Link TL-WR740N/841N).", signature = "D-Link/TP-Link")
+        ))
     }
 }

@@ -150,6 +150,7 @@ class MainActivity : ComponentActivity() {
                 } else {
                     DetailScreen(
                         accessPoint = selectedAp!!,
+                        allAccessPoints = scanResults,
                         onBack = { selectedAp = null }
                     )
                 }
@@ -195,6 +196,12 @@ class MainActivity : ComponentActivity() {
         isScanningState.value = true
 
         try {
+            if (!wifiManager.isWifiEnabled) {
+                Toast.makeText(this, "Пожалуйста, включите Wi-Fi на устройстве.", Toast.LENGTH_LONG).show()
+                isScanningState.value = false
+                return
+            }
+
             val hasFineLoc = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
             val hasCoarseLoc = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
             val hasWifiState = ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_WIFI_STATE) == PackageManager.PERMISSION_GRANTED
@@ -218,7 +225,7 @@ class MainActivity : ComponentActivity() {
             val isNetworkLocationEnabled = try { locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) } catch (_: Exception) { true }
 
             if (!isGpsEnabled && !isNetworkLocationEnabled) {
-                Toast.makeText(this, "Служба геолокации (GPS) отключена. Рекомендуется включить её для точного сканирования сетей.", Toast.LENGTH_LONG).show()
+                Toast.makeText(this, "Служба геолокации (GPS) отключена. Включите её для обнаружения Wi-Fi сетей.", Toast.LENGTH_LONG).show()
             }
 
             startWifiScan()
@@ -232,10 +239,12 @@ class MainActivity : ComponentActivity() {
         try {
             val success = wifiManager.startScan()
             if (!success) {
+                // Throttled by Android OS (max 4 scans per 2 minutes in foreground)
+                Toast.makeText(this, "Ограничение Android (Scan Throttling). Отображаются кэшированные данные.", Toast.LENGTH_SHORT).show()
                 fetchScanResults()
             }
         } catch (e: Exception) {
-            Toast.makeText(this, "Ошибка запуска сканирования: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "Ошибка сканирования: ${e.localizedMessage}", Toast.LENGTH_SHORT).show()
             isScanningState.value = false
             fetchScanResults()
         }
