@@ -124,6 +124,9 @@ class MainActivity : ComponentActivity() {
             }
         } catch (e: Exception) {}
 
+        // Auto-fetch cached scan results immediately
+        fetchScanResults()
+
         setContent {
             OmniWifiAuditTheme {
                 var selectedAp by remember { mutableStateOf<AccessPointInfo?>(null) }
@@ -147,7 +150,9 @@ class MainActivity : ComponentActivity() {
                                 Toast.makeText(this, "Не удалось открыть выбор файла", Toast.LENGTH_SHORT).show()
                             }
                         },
-                        onAccessPointClick = { ap -> selectedAp = ap }
+                        onAccessPointClick = { ap ->
+                            selectedAp = ap
+                        }
                     )
                 } else {
                     DetailScreen(

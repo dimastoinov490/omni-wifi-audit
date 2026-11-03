@@ -13,18 +13,33 @@ object DiagnosticResultRepository {
     fun saveReport(report: DiagnosticReport) {
         val list = reports.getOrPut(report.targetBssid) { mutableListOf() }
         synchronized(list) {
+            // Keep the latest report at index 0, and keep history up to 50 entries
             list.add(0, report)
+            if (list.size > 50) {
+                list.removeAt(list.lastIndex)
+            }
         }
         val allReports = reports.values.flatten().sortedByDescending { it.timestamp }
         _reportsFlow.value = allReports
     }
 
     fun getReportsForBssid(bssid: String): List<DiagnosticReport> {
-        return reports[bssid]?.toList() ?: emptyList()
+        val list = reports[bssid] ?: return emptyList()
+        return synchronized(list) { list.toList() }
     }
 
     fun getLatestReport(bssid: String, moduleId: String): DiagnosticReport? {
-        return reports[bssid]?.firstOrNull { it.moduleId == moduleId }
+        val list = reports[bssid] ?: return null
+        return synchronized(list) { list.firstOrNull { it.moduleId == moduleId } }
+    }
+
+    fun getReportHistory(bssid: String, moduleId: String): List<DiagnosticReport> {
+        val list = reports[bssid] ?: return emptyList()
+        return synchronized(list) { list.filter { it.moduleId == moduleId } }
+    }
+
+    fun getAllReports(): List<DiagnosticReport> {
+        return reports.values.flatten().sortedByDescending { it.timestamp }
     }
 
     fun clear() {

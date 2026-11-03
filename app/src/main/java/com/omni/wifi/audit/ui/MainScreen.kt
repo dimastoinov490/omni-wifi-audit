@@ -1,25 +1,21 @@
 package com.omni.wifi.audit.ui
 
+import android.os.Build
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.material3.*
 import androidx.compose.runtime.*
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
+import com.omni.wifi.audit.domain.hardware.SystemInfoProvider
+import com.omni.wifi.audit.domain.hardware.SystemOverview
 import com.omni.wifi.audit.domain.model.AccessPointInfo
-import com.omni.wifi.audit.ui.components.ShieldIcon
-import com.omni.wifi.audit.ui.components.SignalStrengthGraph
-import com.omni.wifi.audit.ui.theme.AuditGradient
+import com.omni.wifi.audit.ui.components.NavigationTab
+import com.omni.wifi.audit.ui.components.PrototypeBottomNavBar
+import com.omni.wifi.audit.ui.screens.*
+import com.omni.wifi.audit.ui.theme.BackgroundBrush
+import kotlinx.coroutines.launch
 
 @Composable
 fun MainScreen(
@@ -28,234 +24,115 @@ fun MainScreen(
     onScanClick: () -> Unit = {},
     onUpdateGithub: () -> Unit = {},
     onUpdateLocalFile: () -> Unit = {},
-    onAccessPointClick: (AccessPointInfo) -> Unit
+    onAccessPointClick: (AccessPointInfo) -> Unit = {}
 ) {
-    var dragAmountSum by remember { mutableStateOf(0f) }
-    var showUpdateDialog by remember { mutableStateOf(false) }
+    val context = LocalContext.current
+    val coroutineScope = rememberCoroutineScope()
 
-    if (showUpdateDialog) {
-        AlertDialog(
-            onDismissRequest = { showUpdateDialog = false },
-            title = { Text("Обновить базы PIN и уязвимостей", color = Color.White) },
-            text = { Text("Выберите источник загрузки файлов баз данных (OUI, CVE, PIN):", color = Color.Gray) },
-            confirmButton = {
-                TextButton(onClick = {
-                    showUpdateDialog = false
-                    onUpdateGithub()
-                }) {
-                    Text("Репозиторий GitHub", color = MaterialTheme.colorScheme.primary)
-                }
-            },
-            dismissButton = {
-                TextButton(onClick = {
-                    showUpdateDialog = false
-                    onUpdateLocalFile()
-                }) {
-                    Text("Локальный файл (.json / .txt)", color = Color.LightGray)
-                }
-            },
-            containerColor = MaterialTheme.colorScheme.surface
+    var currentTab by remember { mutableStateOf(NavigationTab.HOME) }
+    var diagnosticTargetAp by remember { mutableStateOf<AccessPointInfo?>(null) }
+
+    var systemInfo by remember {
+        mutableStateOf(
+            SystemOverview(
+                driverName = "qcacld-3.0",
+                androidVersion = Build.VERSION.RELEASE ?: "13",
+                rootStatusText = "Проверка...",
+                isRootGranted = false,
+                batteryPercent = 100,
+                deviceModel = "${Build.MANUFACTURER} ${Build.MODEL}",
+                boardPlatform = Build.BOARD ?: "whyred"
+            )
         )
     }
 
-    Column(
+    fun refreshSystemInfo() {
+        coroutineScope.launch {
+            systemInfo = SystemInfoProvider.getSystemOverview(context)
+        }
+    }
+
+    LaunchedEffect(Unit) {
+        refreshSystemInfo()
+    }
+
+    BackHandler(enabled = currentTab != NavigationTab.HOME) {
+        currentTab = NavigationTab.HOME
+    }
+
+    Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(MaterialTheme.colorScheme.background)
-            .padding(16.dp)
-            .pointerInput(isScanning) {
-                detectVerticalDragGestures(
-                    onDragStart = { dragAmountSum = 0f },
-                    onVerticalDrag = { _, dragAmount ->
-                        dragAmountSum += dragAmount
-                    },
-                    onDragEnd = {
-                        if (dragAmountSum > 80f && !isScanning) {
+            .background(BackgroundBrush)
+            .statusBarsPadding()
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(bottom = 72.dp)
+        ) {
+            when (currentTab) {
+                NavigationTab.HOME -> {
+                    HomeScreen(
+                        scanResults = scanResults,
+                        isScanning = isScanning,
+                        systemInfo = systemInfo,
+                        onRefresh = {
+                            refreshSystemInfo()
+                            onScanClick()
+                        },
+                        onNavigateToNetworks = { currentTab = NavigationTab.NETWORKS },
+                        onNavigateToDiagnostics = { currentTab = NavigationTab.DIAGNOSTICS }
+                    )
+                }
+
+                NavigationTab.NETWORKS -> {
+                    NetworksScreen(
+                        scanResults = scanResults,
+                        isScanning = isScanning,
+                        selectedAp = null,
+                        onAccessPointClick = { ap ->
+                            onAccessPointClick(ap)
+                        },
+                        onRefresh = {
+                            refreshSystemInfo()
                             onScanClick()
                         }
-                        dragAmountSum = 0f
-                    }
-                )
-            }
-    ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "OMNI WIFI AUDIT",
-                style = MaterialTheme.typography.headlineMedium.copy(
-                    fontWeight = FontWeight.Bold,
-                    letterSpacing = 2.sp
-                ),
-                color = Color.White
-            )
-
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    onClick = { showUpdateDialog = true },
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.secondary
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 8.dp, vertical = 8.dp)
-                ) {
-                    Text(text = "Обновить базы", fontSize = 11.sp)
-                }
-
-                Button(
-                    onClick = onScanClick,
-                    enabled = !isScanning,
-                    colors = ButtonDefaults.buttonColors(
-                        containerColor = MaterialTheme.colorScheme.primary
-                    ),
-                    shape = RoundedCornerShape(8.dp),
-                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 8.dp)
-                ) {
-                    if (isScanning) {
-                        CircularProgressIndicator(
-                            modifier = Modifier.size(16.dp),
-                            color = Color.White,
-                            strokeWidth = 2.dp
-                        )
-                        Spacer(modifier = Modifier.width(6.dp))
-                        Text(text = "Поиск...", fontSize = 11.sp)
-                    } else {
-                        Text(text = "Сканировать", fontSize = 11.sp)
-                    }
-                }
-            }
-        }
-        
-        Spacer(modifier = Modifier.height(8.dp))
-        
-        Box(
-            modifier = Modifier
-                .fillMaxWidth()
-                .height(2.dp)
-                .background(AuditGradient)
-        )
-
-        Spacer(modifier = Modifier.height(16.dp))
-
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Text(
-                text = "Обнаруженные сети (${scanResults.size})",
-                style = MaterialTheme.typography.titleSmall,
-                color = Color.Gray
-            )
-
-            if (isScanning) {
-                Text(
-                    text = "Сканирование эфира...",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.primary
-                )
-            }
-        }
-
-        Spacer(modifier = Modifier.height(8.dp))
-
-        if (scanResults.isEmpty()) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .weight(1f),
-                contentAlignment = Alignment.Center
-            ) {
-                Text(text = "Сети не найдены. Нажмите «Сканировать».", color = Color.Gray)
-            }
-        } else {
-            LazyColumn(
-                modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.spacedBy(12.dp)
-            ) {
-                items(scanResults) { ap ->
-                    AccessPointCard(ap = ap, onClick = { onAccessPointClick(ap) })
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun AccessPointCard(ap: AccessPointInfo, onClick: () -> Unit) {
-    Card(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick),
-        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
-        shape = RoundedCornerShape(12.dp)
-    ) {
-        Row(
-            modifier = Modifier.padding(16.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            SignalStrengthGraph(level = ap.signalLevel)
-            
-            Spacer(modifier = Modifier.width(16.dp))
-            
-            Column(modifier = Modifier.weight(1f)) {
-                Text(text = ap.ssid, fontWeight = FontWeight.Bold, color = Color.White)
-                Text(text = ap.bssid, style = MaterialTheme.typography.bodySmall, color = Color.Gray)
-                Text(
-                    text = "${ap.band} • Канал ${ap.channel} (${ap.frequency} МГц)",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color(0xFF74C0FC)
-                )
-                Row(
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "${ap.vendor ?: "Неизвестный"} | ${ap.encryptionType}",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = Color.LightGray
                     )
-                    if (ap.isWpsSupported) {
-                        Surface(
-                            color = Color(0xFFE8590C),
-                            shape = RoundedCornerShape(4.dp)
-                        ) {
-                            Text(
-                                text = "WPS",
-                                color = Color.White,
-                                fontSize = 9.sp,
-                                fontWeight = FontWeight.Bold,
-                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp)
-                            )
+                }
+
+                NavigationTab.DIAGNOSTICS -> {
+                    DiagnosticsTabScreen(
+                        currentTarget = diagnosticTargetAp ?: scanResults.firstOrNull(),
+                        allAccessPoints = scanResults,
+                        onSelectTarget = { ap -> diagnosticTargetAp = ap }
+                    )
+                }
+
+                NavigationTab.HISTORY -> {
+                    HistoryScreen(
+                        onSelectReport = { report ->
+                            val matched = scanResults.firstOrNull { it.bssid.equals(report.targetBssid, ignoreCase = true) }
+                            if (matched != null) {
+                                onAccessPointClick(matched)
+                            }
                         }
-                    }
-                }
-            }
-
-            if (ap.potentialVulnerabilities.isNotEmpty()) {
-                Box(contentAlignment = Alignment.Center) {
-                    ShieldIcon()
-                    Text(
-                        text = "!",
-                        color = Color.Red,
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 12.sp,
-                        modifier = Modifier.offset(y = (-2).dp)
                     )
                 }
             }
         }
-        
-        if (ap.potentialVulnerabilities.isNotEmpty()) {
-            Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 16.dp)) {
-                Divider(color = Color.DarkGray, thickness = 0.5.dp)
-                Spacer(modifier = Modifier.height(8.dp))
-                ap.potentialVulnerabilities.take(2).forEach { vuln ->
-                    Text(text = "• $vuln", style = MaterialTheme.typography.bodySmall, color = Color.LightGray)
+
+        PrototypeBottomNavBar(
+            selectedTab = currentTab,
+            onTabSelected = { tab ->
+                currentTab = tab
+                if (tab == NavigationTab.HOME || tab == NavigationTab.NETWORKS) {
+                    refreshSystemInfo()
                 }
-            }
-        }
+            },
+            modifier = Modifier
+                .align(androidx.compose.ui.Alignment.BottomCenter)
+                .navigationBarsPadding()
+        )
     }
 }

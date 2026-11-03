@@ -6,16 +6,12 @@ import com.omni.wifi.audit.domain.model.AccessPointInfo
 import com.omni.wifi.audit.domain.vulnerability.CveMatchingEngine
 
 class CveAdvisoryModule : IDiagnosticModule {
-    override val id: String = "module_cve_advisory"
-    override val title: String = "База уязвимостей и CVE оборудования"
-    override val description: String = "Сопоставление производителя и модели роутера с базой известных критических бюллетеней безопасности (NVD/CVE)."
-    override val requiredPermissions: List<String> = emptyList()
-    override val requiresRoot: Boolean = false
-    override val requiresConnection: Boolean = false
-
-    override suspend fun checkAvailability(context: Context, target: AccessPointInfo): ModuleAvailability {
-        return ModuleAvailability.Available
-    }
+    override val id: String = "cve_advisory_module"
+    override val title: String = "Анализ уязвимостей CVE"
+    override val description: String = "Сопоставление идентифицированного производителя и модели роутера с базой известных уязвимостей безопасности (NVD / CVE)."
+    override val category: ModuleCategory = ModuleCategory.VULNERABILITY
+    override val version: String = "1.0.0"
+    override val dependencies: List<String> = listOf("router_id_module")
 
     override suspend fun execute(
         context: Context,
@@ -24,44 +20,49 @@ class CveAdvisoryModule : IDiagnosticModule {
         onEvent: suspend (DiagnosticEvent) -> Unit
     ): DiagnosticReport {
         val logs = mutableListOf<String>()
+        val dataItems = mutableListOf<DiagnosticDataItem>()
+        val sources = mutableListOf(DataSourceOrigin.LOCAL_DATABASE)
 
-        fun log(msg: String, level: LogLevel = LogLevel.INFO) {
-            logs.add(msg)
+        onEvent(DiagnosticEvent.StatusChange(DiagnosticStatus.RUNNING, "Поиск известных CVE уязвимостей..."))
+        onEvent(DiagnosticEvent.Progress("Определение модели маршрутизатора", 1, 3))
+        logs.add("[*] Запуск модуля проверки базы CVE...")
+
+        val vendor = target.vendor ?: "Неизвестный вендор"
+        logs.add("    • Целевой вендор: $vendor | SSID: ${target.ssid}")
+        dataItems.add(DiagnosticDataItem("Целевой вендор", vendor, DataSourceOrigin.LOCAL_DATABASE))
+
+        onEvent(DiagnosticEvent.Progress("Запрос локальной базы CVE", 2, 3))
+        val engine = CveMatchingEngine(context)
+        val matchedCves = engine.matchCves(vendor, null)
+
+        logs.add("    • Найдено зарегистрированных CVE: ${matchedCves.size}")
+        dataItems.add(DiagnosticDataItem("Количество найденных CVE", matchedCves.size.toString(), DataSourceOrigin.LOCAL_DATABASE))
+
+        onEvent(DiagnosticEvent.Progress("Оценка уровней критичности CVSS", 3, 3))
+        for (cve in matchedCves.take(5)) {
+            val prefix = if (cve.severity.contains("CRITICAL", ignoreCase = true) || cve.severity.contains("HIGH", ignoreCase = true)) "[!]" else "[i]"
+            logs.add("$prefix ${cve.cveId} [${cve.severity}]: ${cve.description.take(80)}...")
+            dataItems.add(DiagnosticDataItem(
+                cve.cveId,
+                cve.severity,
+                DataSourceOrigin.LOCAL_DATABASE,
+                if (cve.severity.contains("HIGH", ignoreCase = true) || cve.severity.contains("CRITICAL", ignoreCase = true)) DiagnosticStatus.WARNING else DiagnosticStatus.SUPPORTED
+            ))
         }
 
-        onEvent(DiagnosticEvent.StatusChange(DiagnosticStatus.RUNNING, "Поиск CVE записей в базе..."))
-        onEvent(DiagnosticEvent.Progress("Запрос к локальной базе CVE", 1, 2))
-
-        val vendor = target.vendor?.split(" ")?.firstOrNull() ?: ""
-        val model = target.vendor?.split(" ")?.drop(1)?.joinToString(" ")
-
-        log("[*] Поиск CVE уязвимостей для производителя: '$vendor'...")
-        if (!model.isNullOrBlank()) {
-            log("    • Модель устройства: '$model'")
-        }
-
-        val cveEngine = CveMatchingEngine(context)
-        val matched = cveEngine.matchCves(vendor, model)
-
-        onEvent(DiagnosticEvent.Progress("Анализ результатов", 2, 2))
-
-        val status: DiagnosticStatus
-        val summary: String
-
-        if (matched.isNotEmpty()) {
-            status = DiagnosticStatus.SUCCESS
-            log("[!] Обнаружено зарегистрированных CVE записей: ${matched.size}", LogLevel.WARNING)
-            matched.forEach { cve ->
-                val matchType = if (cve.isExactModelMatch) "[ПОДТВЕРЖДЕНО ДЛЯ МОДЕЛИ]" else "[ОБОРУДОВАНИЕ ВЕНДОРА]"
-                log("    • $matchType ${cve.cveId} (${cve.severity}): ${cve.description}")
-                log("      Уязвимые версии: ${cve.affectedVersions}")
-            }
-            log("[i] Примечание: Уязвимость подтверждается при совпадении ревизии оборудования и версии прошивки.", LogLevel.INFO)
-            summary = "Найдено записей CVE: ${matched.size} для вендора '$vendor'."
+        val hasHighOrCritical = matchedCves.any { it.severity.contains("HIGH", ignoreCase = true) || it.severity.contains("CRITICAL", ignoreCase = true) }
+        val status = if (hasHighOrCritical) {
+            DiagnosticStatus.WARNING
+        } else if (matchedCves.isNotEmpty()) {
+            DiagnosticStatus.PARTIAL
         } else {
-            status = DiagnosticStatus.SUCCESS
-            log("[OK] Критические зарегистрированные CVE для '$vendor' отсутствуют в текущей базе.", LogLevel.SUCCESS)
-            summary = "Критических известных CVE для данного производителя в базе не обнаружено."
+            DiagnosticStatus.SUPPORTED
+        }
+
+        val summary = if (matchedCves.isNotEmpty()) {
+            "Обнаружено ${matchedCves.size} потенциальных уязвимостей CVE для $vendor."
+        } else {
+            "В базе данных не обнаружено известных критических CVE для $vendor."
         }
 
         onEvent(DiagnosticEvent.StatusChange(status, summary))
@@ -69,15 +70,14 @@ class CveAdvisoryModule : IDiagnosticModule {
         return DiagnosticReport(
             moduleId = id,
             moduleTitle = title,
+            category = category,
             targetBssid = target.bssid,
             targetSsid = target.ssid,
             status = status,
             summary = summary,
             logs = logs,
-            details = mapOf(
-                "Vendor" to vendor,
-                "CVE Count" to matched.size.toString()
-            )
+            dataItems = dataItems,
+            sources = sources
         )
     }
 }
