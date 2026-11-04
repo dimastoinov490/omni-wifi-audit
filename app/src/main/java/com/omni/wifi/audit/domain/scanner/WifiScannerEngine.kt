@@ -29,44 +29,40 @@ class WifiScannerEngine(private val context: Context) {
     private val wifiManager = appContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
     private val cveEngine = CveMatchingEngine(appContext)
 
-    /** Runtime permission needed for obtaining nearby scan results. */
+    /** Scan result permissions vary by OS; request only dangerous runtime permissions. */
     fun checkPermissions(): List<String> = buildList {
-        if (ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-            add(Manifest.permission.ACCESS_FINE_LOCATION)
+        val fineGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        val coarseGranted = ContextCompat.checkSelfPermission(appContext, Manifest.permission.ACCESS_COARSE_LOCATION) == PackageManager.PERMISSION_GRANTED
+        if (!fineGranted && !coarseGranted) add(Manifest.permission.ACCESS_FINE_LOCATION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(appContext, Manifest.permission.NEARBY_WIFI_DEVICES) != PackageManager.PERMISSION_GRANTED) {
+            add(Manifest.permission.NEARBY_WIFI_DEVICES)
         }
     }
 
     fun isWifiEnabled(): Boolean = try {
         wifiManager?.isWifiEnabled == true
-    } catch (_: SecurityException) {
-        false
-    } catch (_: RuntimeException) {
-        false
-    }
+    } catch (_: SecurityException) { false } catch (_: RuntimeException) { false }
 
-    private fun isLocationEnabled(): Boolean {
+    fun isLocationEnabled(): Boolean {
         val manager = appContext.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
         return try {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
-                manager.isLocationEnabled
-            } else {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) manager.isLocationEnabled
+            else {
                 @Suppress("DEPRECATION")
                 manager.isProviderEnabled(LocationManager.GPS_PROVIDER) || manager.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
             }
-        } catch (_: RuntimeException) {
-            false
-        }
+        } catch (_: RuntimeException) { false }
     }
 
     fun triggerScan(): ScanTriggerResult {
-        if (wifiManager == null) return ScanTriggerResult.Error("Wi-Fi service is unavailable")
+        val manager = wifiManager ?: return ScanTriggerResult.Error("Wi-Fi service is unavailable")
         if (!isWifiEnabled()) return ScanTriggerResult.WifiDisabled
-        val missingPermissions = checkPermissions()
-        if (missingPermissions.isNotEmpty()) return ScanTriggerResult.PermissionRequired(missingPermissions)
+        val missing = checkPermissions()
+        if (missing.isNotEmpty()) return ScanTriggerResult.PermissionRequired(missing)
         if (!isLocationEnabled()) return ScanTriggerResult.LocationDisabled
-
         return try {
-            if (wifiManager.startScan()) ScanTriggerResult.Started else ScanTriggerResult.Throttled
+            if (manager.startScan()) ScanTriggerResult.Started else ScanTriggerResult.Throttled
         } catch (e: SecurityException) {
             ScanTriggerResult.PermissionRequired(checkPermissions().ifEmpty { listOf(Manifest.permission.ACCESS_FINE_LOCATION) })
         } catch (e: RuntimeException) {
@@ -77,7 +73,7 @@ class WifiScannerEngine(private val context: Context) {
     suspend fun getScanResults(): List<AccessPointInfo> = withContext(Dispatchers.IO) {
         val manager = wifiManager ?: return@withContext emptyList()
         if (checkPermissions().isNotEmpty()) return@withContext emptyList()
-        val rawResults = try {
+        val results = try {
             manager.scanResults.orEmpty()
         } catch (_: SecurityException) {
             emptyList()
@@ -85,24 +81,27 @@ class WifiScannerEngine(private val context: Context) {
             emptyList()
         }
 
-        rawResults.mapNotNull { result ->
+        // CVE matching accesses Room and is suspend; process sequentially within this IO coroutine.
+        val parsed = ArrayList<AccessPointInfo>(results.size)
+        for (result in results) {
             try {
-                parseScanResult(result)
+                parsed += parseScanResult(result)
             } catch (_: RuntimeException) {
-                null
+                // Ignore an individual malformed/unavailable ScanResult without failing the full scan.
             }
-        }.distinctBy { it.bssid.lowercase() }.sortedByDescending { it.signalLevel }
+        }
+        parsed.distinctBy { it.bssid.lowercase() }.sortedByDescending { it.signalLevel }
     }
 
-    private fun parseScanResult(scanResult: ScanResult): AccessPointInfo {
-        val rawBssid = (scanResult.BSSID ?: "00:00:00:00:00:00").uppercase()
-        val freq = scanResult.frequency
-        val channel = WifiChannelAnalyzer.calculateChannel(freq)
-        val band = WifiChannelAnalyzer.determineBand(freq)
-        val wpsInfo = WpsInformationElementParser.parseFromScanResult(scanResult)
+    private suspend fun parseScanResult(scanResult: ScanResult): AccessPointInfo {
+        val bssid = (scanResult.BSSID ?: "00:00:00:00:00:00").uppercase()
+        val frequency = scanResult.frequency
+        val channel = WifiChannelAnalyzer.calculateChannel(frequency)
+        val band = WifiChannelAnalyzer.determineBand(frequency)
+        val wps = WpsInformationElementParser.parseFromScanResult(scanResult)
         val caps = scanResult.capabilities.orEmpty()
-        val hasWps = wpsInfo?.isSupported ?: caps.contains("WPS", ignoreCase = true)
-        val routerId = RouterIdentificationEngine.identify(rawBssid, wpsInfo)
+        val hasWps = wps?.isSupported ?: caps.contains("WPS", ignoreCase = true)
+        val router = RouterIdentificationEngine.identify(bssid, wps)
         val encryption = when {
             caps.contains("SAE", true) && caps.contains("WPA2", true) -> "WPA2/WPA3 Transition"
             caps.contains("SAE", true) || caps.contains("WPA3", true) -> "WPA3-Personal"
@@ -124,30 +123,27 @@ class WifiScannerEngine(private val context: Context) {
                     else -> "802.11 (не определен)"
                 }
             } catch (_: RuntimeException) { "802.11 (не определен)" }
-        } else if (freq >= 5000) "802.11a/ac (оценка по частоте)" else "802.11b/g/n (оценка по частоте)"
-
+        } else if (frequency >= 5000) "802.11a/ac (оценка по частоте)" else "802.11b/g/n (оценка по частоте)"
         val wpsDetails = when {
             !hasWps -> "WPS отключен или не объявлен в данных сканирования"
-            wpsInfo?.isLocked == true -> "WPS объявлен; точка сообщает блокировку настройки"
-            wpsInfo != null -> "WPS v${wpsInfo.version} (${wpsInfo.configMethods.joinToString("/")})"
+            wps?.isLocked == true -> "WPS объявлен; точка сообщает блокировку настройки"
+            wps != null -> "WPS v${wps.version} (${wps.configMethods.joinToString("/")})"
             else -> "WPS объявлен; детали информационного элемента недоступны"
         }
-        val vulnerabilities = buildList {
-            if (encryption == "Open") add("Открытая сеть: точка не объявляет шифрование; это не подтверждает доступность сети или уязвимость клиента")
+        val findings = buildList {
+            if (encryption == "Open") add("Точка не объявляет шифрование; сканирование не проверяет доступность сети или безопасность клиентского трафика")
             if (encryption == "WEP") add("Объявлен устаревший WEP; рекомендуется отключить его")
-            if (hasWps) add("Точка объявляет поддержку WPS; активность протокола и эксплуатируемость этим сканированием не проверяются")
-            cveEngine.matchCves(routerId.vendor, routerId.model).take(3).forEach { cve ->
-                val matchLabel = if (cve.isExactModelMatch) "Совпадение модели" else "Совпадение вендора; модель/версия не подтверждены"
-                add("[$matchLabel] ${cve.cveId} (${cve.severity}): ${cve.description}")
+            if (hasWps) add("Точка объявляет поддержку WPS; активность протокола и эксплуатируемость не проверяются")
+            cveEngine.matchCves(router.vendor, router.model).take(3).forEach { cve ->
+                val basis = if (cve.isExactModelMatch) "Совпадение модели; версия не проверена" else "Совпадение вендора; модель и версия не подтверждены"
+                add("[$basis] ${cve.cveId} (${cve.severity}): ${cve.description}")
             }
         }
-        val displayName = routerId.model?.let { "${routerId.vendor} $it" } ?: routerId.vendor
-
         return AccessPointInfo(
             ssid = scanResult.SSID?.ifEmpty { "<Скрытая сеть>" } ?: "<Скрытая сеть>",
-            bssid = rawBssid,
+            bssid = bssid,
             signalLevel = scanResult.level,
-            frequency = freq,
+            frequency = frequency,
             channel = channel,
             band = band,
             capabilities = caps,
@@ -155,8 +151,8 @@ class WifiScannerEngine(private val context: Context) {
             encryptionType = encryption,
             isWpsSupported = hasWps,
             wpsDetails = wpsDetails,
-            vendor = displayName,
-            potentialVulnerabilities = vulnerabilities
+            vendor = router.model?.let { "${router.vendor} $it" } ?: router.vendor,
+            potentialVulnerabilities = findings
         )
     }
 }

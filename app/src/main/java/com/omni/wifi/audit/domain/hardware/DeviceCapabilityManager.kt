@@ -7,6 +7,22 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
 
+/** Values gathered from Android system properties and readable kernel interfaces. */
+data class SystemCapabilities(
+    val deviceModel: String,
+    val manufacturer: String,
+    val androidVersion: String,
+    val apiLevel: Int,
+    val kernelFull: String,
+    val kernelShort: String,
+    val romDisplay: String,
+    val isRootGranted: Boolean,
+    val rootIdOutput: String?,
+    val selinuxMode: String,
+    /** Android 9+ restricts access to several legacy Wi-Fi supplicant interfaces. */
+    val isSupplicantSocketRestricted: Boolean
+)
+
 /** Collect only values reported by Android/Linux; never substitute example device values. */
 object DeviceCapabilityManager {
     suspend fun inspect(): SystemCapabilities = withContext(Dispatchers.IO) {
@@ -15,13 +31,12 @@ object DeviceCapabilityManager {
             ?: "Недоступно"
         val kernelShort = Regex("\\d+\\.\\d+(?:\\.\\d+)?").find(kernel)?.value ?: "Не определено"
         val rootResult = try { RootCapabilityManager.inspectRoot() } catch (_: Exception) { null }
-        val rootGranted = rootResult?.status == RootStatus.ROOT_GRANTED
         val selinux = try {
             File("/sys/fs/selinux/enforce").takeIf { it.canRead() }?.readText()?.trim()?.let {
                 when (it) { "1" -> "Enforcing"; "0" -> "Permissive"; else -> "Не определено ($it)" }
             }
         } catch (_: Exception) { null } ?: "Недоступно"
-        val interfaces = try { File("/sys/class/net").list()?.toList().orEmpty() } catch (_: Exception) { emptyList() }
+
         SystemCapabilities(
             deviceModel = Build.MODEL?.takeIf(String::isNotBlank) ?: "Не определено",
             manufacturer = Build.MANUFACTURER?.takeIf(String::isNotBlank) ?: "Не определен",
@@ -30,10 +45,10 @@ object DeviceCapabilityManager {
             kernelFull = kernel,
             kernelShort = kernelShort,
             romDisplay = Build.DISPLAY?.takeIf(String::isNotBlank) ?: "Не определена",
-            isRootGranted = rootGranted,
+            isRootGranted = rootResult?.status == RootStatus.ROOT_GRANTED,
             rootIdOutput = rootResult?.uid,
             selinuxMode = selinux,
-            isSupplicantSocketRestricted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && interfaces.isEmpty()
+            isSupplicantSocketRestricted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
         )
     }
 
