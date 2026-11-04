@@ -1,36 +1,25 @@
 package com.omni.wifi.audit.domain.hardware
 
+import android.os.Build
+import com.omni.wifi.audit.domain.diagnostic.providers.SysFsDataProvider
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-
-data class FullDriverInspectionResult(
-    val system: SystemCapabilities,
-    val driver: DriverCapabilityInfo
-)
+import java.io.File
 
 object WifiDriverInspector {
-
-    private val driverBackends: List<IWifiDriverHardware> = listOf(
-        QualcommQcacldDriverHardware(),
-        GenericAndroidWifiHardware()
-    )
-
     suspend fun inspect(): FullDriverInspectionResult = withContext(Dispatchers.IO) {
         val system = DeviceCapabilityManager.inspect()
-
-        // Choose appropriate hardware backend
-        val isQualcommDevice = system.deviceModel.contains("whyred", ignoreCase = true) ||
-                system.deviceModel.contains("Redmi Note 5", ignoreCase = true) ||
-                system.kernelFull.contains("whyred", ignoreCase = true) ||
-                system.kernelFull.contains("qcom", ignoreCase = true)
-
-        val backend = if (isQualcommDevice) {
-            driverBackends.first { it is QualcommQcacldDriverHardware }
+        val netIfaces = SysFsDataProvider.listNetworkInterfaces()
+        val wirelessIface = netIfaces.firstOrNull { it.isWireless }
+        val driverName = wirelessIface?.name?.let { name ->
+            try { File("/sys/class/net/$name/device/driver").canonicalFile.name } catch (_: Exception) { null }
+        }.orEmpty()
+        val boardHint = listOf(Build.HARDWARE, Build.BOARD, driverName).joinToString(" ").lowercase()
+        val backend: IWifiDriverHardware = if (boardHint.contains("qcom") || boardHint.contains("qualcomm") || boardHint.contains("qcacld")) {
+            QualcommQcacldDriverHardware()
         } else {
-            driverBackends.first { it is GenericAndroidWifiHardware }
+            GenericAndroidWifiHardware()
         }
-
-        val driverInfo = backend.probe(system.isRootGranted)
-        FullDriverInspectionResult(system, driverInfo)
+        FullDriverInspectionResult(system, backend.probe(system.isRootGranted))
     }
 }
