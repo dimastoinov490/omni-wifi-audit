@@ -73,13 +73,27 @@ class WifiScannerEngine(private val context: Context) {
     suspend fun getScanResults(): List<AccessPointInfo> = withContext(Dispatchers.IO) {
         val manager = wifiManager ?: return@withContext emptyList()
         if (checkPermissions().isNotEmpty()) return@withContext emptyList()
-        val results = try { manager.scanResults.orEmpty() } catch (_: SecurityException) { emptyList() } catch (_: RuntimeException) { emptyList() }
-        results.mapNotNull { result -> try { parseScanResult(result) } catch (_: RuntimeException) { null } }
-            .distinctBy { it.bssid.lowercase() }
-            .sortedByDescending { it.signalLevel }
+        val results = try {
+            manager.scanResults.orEmpty()
+        } catch (_: SecurityException) {
+            emptyList()
+        } catch (_: RuntimeException) {
+            emptyList()
+        }
+
+        // CVE matching accesses Room and is suspend; process sequentially within this IO coroutine.
+        val parsed = ArrayList<AccessPointInfo>(results.size)
+        for (result in results) {
+            try {
+                parsed += parseScanResult(result)
+            } catch (_: RuntimeException) {
+                // Ignore an individual malformed/unavailable ScanResult without failing the full scan.
+            }
+        }
+        parsed.distinctBy { it.bssid.lowercase() }.sortedByDescending { it.signalLevel }
     }
 
-    private fun parseScanResult(scanResult: ScanResult): AccessPointInfo {
+    private suspend fun parseScanResult(scanResult: ScanResult): AccessPointInfo {
         val bssid = (scanResult.BSSID ?: "00:00:00:00:00:00").uppercase()
         val frequency = scanResult.frequency
         val channel = WifiChannelAnalyzer.calculateChannel(frequency)
