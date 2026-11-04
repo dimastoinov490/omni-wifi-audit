@@ -1,88 +1,43 @@
 package com.omni.wifi.audit.domain.hardware
 
 import android.os.Build
+import com.omni.wifi.audit.domain.diagnostic.security.RootCapabilityManager
+import com.omni.wifi.audit.domain.diagnostic.security.RootStatus
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 
-data class SystemCapabilities(
-    val deviceModel: String,
-    val manufacturer: String,
-    val androidVersion: String,
-    val apiLevel: Int,
-    val kernelFull: String,
-    val kernelShort: String,
-    val romDisplay: String,
-    val isRootGranted: Boolean,
-    val rootIdOutput: String?,
-    val selinuxMode: String,
-    val isSupplicantSocketRestricted: Boolean
-)
-
+/** Collect only values reported by Android/Linux; never substitute example device values. */
 object DeviceCapabilityManager {
-
     suspend fun inspect(): SystemCapabilities = withContext(Dispatchers.IO) {
-        val kernelFull = try {
-            File("/proc/version").readText().lines().firstOrNull()?.trim()
-                ?: (System.getProperty("os.version") ?: "Linux 4.4")
-        } catch (_: Exception) {
-            System.getProperty("os.version") ?: "Linux 4.4"
-        }
-
-        val kernelShort = when {
-            kernelFull.contains("4.4") -> "4.4"
-            kernelFull.contains("4.19") -> "4.19"
-            else -> kernelFull.split(" ").firstOrNull { it.contains(".") } ?: "4.4"
-        }
-
-        val rom = Build.DISPLAY ?: "Pixel Experience (AOSP)"
-        val device = Build.MODEL ?: "Redmi Note 5"
-        val mfg = Build.MANUFACTURER ?: "Xiaomi"
-
-        // Check Root via su
-        var isRoot = false
-        var rootId: String? = null
-        try {
-            val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "id"))
-            val r = BufferedReader(InputStreamReader(p.inputStream))
-            val line = r.readLine()
-            p.waitFor()
-            if (line != null && line.contains("uid=0")) {
-                isRoot = true
-                rootId = line
+        val kernel = readFirstLine(File("/proc/version"))
+            ?: System.getProperty("os.version")?.takeIf(String::isNotBlank)
+            ?: "Недоступно"
+        val kernelShort = Regex("\\d+\\.\\d+(?:\\.\\d+)?").find(kernel)?.value ?: "Не определено"
+        val rootResult = try { RootCapabilityManager.inspectRoot() } catch (_: Exception) { null }
+        val rootGranted = rootResult?.status == RootStatus.ROOT_GRANTED
+        val selinux = try {
+            File("/sys/fs/selinux/enforce").takeIf { it.canRead() }?.readText()?.trim()?.let {
+                when (it) { "1" -> "Enforcing"; "0" -> "Permissive"; else -> "Не определено ($it)" }
             }
-        } catch (_: Exception) {}
-
-        // Check SELinux
-        var selinux = "Enforcing"
-        if (isRoot) {
-            try {
-                val p = Runtime.getRuntime().exec(arrayOf("su", "-c", "getenforce"))
-                val r = BufferedReader(InputStreamReader(p.inputStream))
-                val mode = r.readLine()?.trim()
-                p.waitFor()
-                if (!mode.isNullOrBlank()) {
-                    selinux = mode
-                }
-            } catch (_: Exception) {}
-        }
-
-        val isSupplicantRestricted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P
-
+        } catch (_: Exception) { null } ?: "Недоступно"
+        val interfaces = try { File("/sys/class/net").list()?.toList().orEmpty() } catch (_: Exception) { emptyList() }
         SystemCapabilities(
-            deviceModel = device,
-            manufacturer = mfg,
-            androidVersion = Build.VERSION.RELEASE ?: "13",
+            deviceModel = Build.MODEL?.takeIf(String::isNotBlank) ?: "Не определено",
+            manufacturer = Build.MANUFACTURER?.takeIf(String::isNotBlank) ?: "Не определен",
+            androidVersion = Build.VERSION.RELEASE?.takeIf(String::isNotBlank) ?: "Не определена",
             apiLevel = Build.VERSION.SDK_INT,
-            kernelFull = kernelFull,
+            kernelFull = kernel,
             kernelShort = kernelShort,
-            romDisplay = rom,
-            isRootGranted = isRoot,
-            rootIdOutput = rootId,
+            romDisplay = Build.DISPLAY?.takeIf(String::isNotBlank) ?: "Не определена",
+            isRootGranted = rootGranted,
+            rootIdOutput = rootResult?.uid,
             selinuxMode = selinux,
-            isSupplicantSocketRestricted = isSupplicantRestricted
+            isSupplicantSocketRestricted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.P && interfaces.isEmpty()
         )
     }
+
+    private fun readFirstLine(file: File): String? = try {
+        file.takeIf { it.canRead() }?.useLines { lines -> lines.firstOrNull()?.trim()?.takeIf(String::isNotBlank) }
+    } catch (_: Exception) { null }
 }
