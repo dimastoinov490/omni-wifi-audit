@@ -31,6 +31,10 @@ object PermissionManager {
         return getMissingPermissions(context, permissions).isEmpty()
     }
 
+    fun hasNetworkStatePermission(context: Context): Boolean {
+        return hasPermission(context, Manifest.permission.ACCESS_NETWORK_STATE)
+    }
+
     fun isLocationEnabled(context: Context): Boolean {
         val lm = context.getSystemService(Context.LOCATION_SERVICE) as? LocationManager ?: return false
         return lm.isProviderEnabled(LocationManager.GPS_PROVIDER) || lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)

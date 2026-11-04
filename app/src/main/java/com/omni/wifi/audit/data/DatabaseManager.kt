@@ -125,12 +125,15 @@ object DatabaseManager {
 
     suspend fun updateFromGithub(context: Context, dao: AuditDao, url: String = "https://raw.githubusercontent.com/omni-wifi/audit-db/main/db.json"): Result<Int> {
         return try {
-            val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
-            val network = connectivityManager?.activeNetwork
-            val capabilities = connectivityManager?.getNetworkCapabilities(network)
-            val hasValidInternet = capabilities != null &&
-                capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
-                capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            try {
+                val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? android.net.ConnectivityManager
+                val network = connectivityManager?.activeNetwork
+                val capabilities = connectivityManager?.getNetworkCapabilities(network)
+                val hasValidInternet = capabilities != null &&
+                    capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+                    capabilities.hasCapability(android.net.NetworkCapabilities.NET_CAPABILITY_VALIDATED)
+            } catch (_: SecurityException) {
+            } catch (_: Exception) {}
 
             val response: HttpResponse = client.get(url)
             val content = response.bodyAsText()

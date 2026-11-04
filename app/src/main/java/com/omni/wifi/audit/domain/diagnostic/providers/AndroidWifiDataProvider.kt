@@ -31,17 +31,25 @@ object AndroidWifiDataProvider {
         val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
             ?: return CurrentWifiConnectionInfo(isConnected = false)
 
-        val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
-        val activeNetwork = cm?.activeNetwork
-        val caps = cm?.getNetworkCapabilities(activeNetwork)
-        val hasWifiCap = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        val isWifiConnected = try {
+            val cm = context.applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            val activeNetwork = cm?.activeNetwork
+            val caps = cm?.getNetworkCapabilities(activeNetwork)
+            caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        } catch (_: SecurityException) {
+            val info = try { wm.connectionInfo } catch (_: Exception) { null }
+            info != null && info.networkId != -1
+        } catch (_: Exception) {
+            val info = try { wm.connectionInfo } catch (_: Exception) { null }
+            info != null && info.networkId != -1
+        }
 
-        if (!hasWifiCap) {
+        if (!isWifiConnected) {
             return CurrentWifiConnectionInfo(isConnected = false)
         }
 
-        val info: WifiInfo? = wm.connectionInfo
-        val dhcp = wm.dhcpInfo
+        val info: WifiInfo? = try { wm.connectionInfo } catch (_: Exception) { null }
+        val dhcp = try { wm.dhcpInfo } catch (_: Exception) { null }
 
         val ipStr = if (dhcp != null && dhcp.ipAddress != 0) intToIp(dhcp.ipAddress) else null
         val gatewayStr = if (dhcp != null && dhcp.gateway != 0) intToIp(dhcp.gateway) else null

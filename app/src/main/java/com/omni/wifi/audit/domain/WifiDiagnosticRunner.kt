@@ -259,9 +259,22 @@ object WifiDiagnosticRunner {
         val connectivityManager = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val wifiManager = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
-        val activeNetwork = connectivityManager?.activeNetwork
-        val capabilities = connectivityManager?.getNetworkCapabilities(activeNetwork)
-        val isWifiConnected = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        var activeNetwork: android.net.Network? = null
+        var isWifiConnected = false
+
+        try {
+            activeNetwork = connectivityManager?.activeNetwork
+            val capabilities = connectivityManager?.getNetworkCapabilities(activeNetwork)
+            isWifiConnected = capabilities?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        } catch (e: SecurityException) {
+            onLog("[!] Предупреждение: Доступ к активной сети ограничен (SecurityException). Проверка статуса через WifiManager...")
+            val info = try { wifiManager?.connectionInfo } catch (_: Exception) { null }
+            isWifiConnected = info != null && info.networkId != -1
+        } catch (e: Exception) {
+            onLog("[!] Ошибка проверки статуса сети: ${e.localizedMessage}")
+            val info = try { wifiManager?.connectionInfo } catch (_: Exception) { null }
+            isWifiConnected = info != null && info.networkId != -1
+        }
 
         if (!isWifiConnected) {
             onLog("[-] Устройство не подключено ни к одной Wi-Fi сети.")
@@ -270,7 +283,7 @@ object WifiDiagnosticRunner {
         }
 
         // Check if connected to THIS specific AP
-        val wifiInfo: WifiInfo? = wifiManager?.connectionInfo
+        val wifiInfo: WifiInfo? = try { wifiManager?.connectionInfo } catch (_: Exception) { null }
         val connectedBssid = wifiInfo?.bssid?.uppercase()
         val targetBssid = ap.bssid.uppercase()
 
@@ -288,18 +301,22 @@ object WifiDiagnosticRunner {
 
         // Detect default gateway IP
         var gatewayIp: String? = null
-        try {
-            val linkProps = connectivityManager?.getLinkProperties(activeNetwork)
-            linkProps?.routes?.forEach { route ->
-                if (route.isDefaultRoute && route.gateway is Inet4Address) {
-                    gatewayIp = route.gateway?.hostAddress
+        if (activeNetwork != null && connectivityManager != null) {
+            try {
+                val linkProps = connectivityManager.getLinkProperties(activeNetwork)
+                linkProps?.routes?.forEach { route ->
+                    if (route.isDefaultRoute && route.gateway is Inet4Address) {
+                        gatewayIp = route.gateway?.hostAddress
+                    }
                 }
-            }
-        } catch (_: Exception) {}
+            } catch (_: SecurityException) {
+                onLog("[!] Доступ к свойствам подключения ограничен политиками безопасности.")
+            } catch (_: Exception) {}
+        }
 
         if (gatewayIp == null) {
             // Fallback from dhcpInfo
-            val dhcp = wifiManager?.dhcpInfo
+            val dhcp = try { wifiManager?.dhcpInfo } catch (_: Exception) { null }
             if (dhcp != null && dhcp.gateway != 0) {
                 gatewayIp = String.format(
                     "%d.%d.%d.%d",

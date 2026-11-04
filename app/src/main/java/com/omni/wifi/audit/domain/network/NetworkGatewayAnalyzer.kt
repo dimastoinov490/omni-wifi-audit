@@ -41,9 +41,22 @@ class NetworkGatewayAnalyzer(private val context: Context) {
         val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
         val wm = context.applicationContext.getSystemService(Context.WIFI_SERVICE) as? WifiManager
 
-        val activeNet = cm?.activeNetwork
-        val caps = cm?.getNetworkCapabilities(activeNet)
-        val isWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        var activeNet: android.net.Network? = null
+        var isWifi = false
+
+        try {
+            activeNet = cm?.activeNetwork
+            val caps = cm?.getNetworkCapabilities(activeNet)
+            isWifi = caps?.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) == true
+        } catch (e: SecurityException) {
+            onLog("[!] Предупреждение: Доступ к активной сети ограничен (SecurityException). Проверка через WifiManager...")
+            val info = try { wm?.connectionInfo } catch (_: Exception) { null }
+            isWifi = info != null && info.networkId != -1
+        } catch (e: Exception) {
+            onLog("[!] Ошибка проверки состояния сети: ${e.localizedMessage}")
+            val info = try { wm?.connectionInfo } catch (_: Exception) { null }
+            isWifi = info != null && info.networkId != -1
+        }
 
         if (!isWifi) {
             onLog("[-] Устройство не подключено к Wi-Fi сети.")
@@ -58,7 +71,7 @@ class NetworkGatewayAnalyzer(private val context: Context) {
             )
         }
 
-        val connInfo = wm?.connectionInfo
+        val connInfo = try { wm?.connectionInfo } catch (_: Exception) { null }
         val connectedBssid = connInfo?.bssid?.uppercase()
         val targetBssid = target.bssid.uppercase()
 
@@ -85,17 +98,20 @@ class NetworkGatewayAnalyzer(private val context: Context) {
 
         // Discover IPv4 Gateway
         var gatewayIp: String? = null
-        try {
-            val linkProps = cm.getLinkProperties(activeNet)
-            linkProps?.routes?.forEach { route ->
-                if (route.isDefaultRoute && route.gateway is Inet4Address) {
-                    gatewayIp = route.gateway?.hostAddress
+        if (activeNet != null && cm != null) {
+            try {
+                val linkProps = cm.getLinkProperties(activeNet)
+                linkProps?.routes?.forEach { route ->
+                    if (route.isDefaultRoute && route.gateway is Inet4Address) {
+                        gatewayIp = route.gateway?.hostAddress
+                    }
                 }
-            }
-        } catch (_: Exception) {}
+            } catch (_: SecurityException) {
+            } catch (_: Exception) {}
+        }
 
         if (gatewayIp == null) {
-            val dhcp = wm.dhcpInfo
+            val dhcp = try { wm?.dhcpInfo } catch (_: Exception) { null }
             if (dhcp != null && dhcp.gateway != 0) {
                 gatewayIp = String.format(
                     "%d.%d.%d.%d",
