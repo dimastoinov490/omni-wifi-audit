@@ -97,7 +97,6 @@ class MainActivity : ComponentActivity() {
             Toast.makeText(this, "Ошибка инициализации Wi-Fi сервиса", Toast.LENGTH_SHORT).show()
         }
 
-        // Initialize database data & DatabaseManager snapshot & In-Memory Cache Manager on Dispatchers.IO
         lifecycleScope.launch(Dispatchers.IO) {
             try {
                 val db = AuditDatabase.getDatabase(applicationContext)
@@ -109,7 +108,6 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // Register broadcast receiver for scan results with try-catch
         try {
             wifiScanReceiver = object : BroadcastReceiver() {
                 override fun onReceive(context: Context, intent: Intent) {
@@ -124,7 +122,6 @@ class MainActivity : ComponentActivity() {
             }
         } catch (e: Exception) {}
 
-        // Auto-fetch cached scan results immediately
         fetchScanResults()
 
         setContent {
@@ -193,7 +190,7 @@ class MainActivity : ComponentActivity() {
                 }
             } catch (e: Exception) {
                 withContext(Dispatchers.Main) {
-                    Toast.makeText(this@MainActivity, "Ошибка сети. Используется встроенный оффлайн-кэш баз данных.", Toast.LENGTH_LONG).show()
+                    Toast.makeText(this@MainActivity, "Ошибка сети. Используется встрое��ный оффлайн-кэш баз данных.", Toast.LENGTH_LONG).show()
                 }
             }
         }
@@ -215,6 +212,10 @@ class MainActivity : ComponentActivity() {
             }
             is ScanTriggerResult.WifiDisabled -> {
                 Toast.makeText(this, "Пожалуйста, включите Wi-Fi на устройстве.", Toast.LENGTH_LONG).show()
+                isScanningState.value = false
+            }
+            is ScanTriggerResult.LocationDisabled -> {
+                Toast.makeText(this, "Включите геолокацию для получения списка Wi‑Fi сетей.", Toast.LENGTH_LONG).show()
                 isScanningState.value = false
             }
             is ScanTriggerResult.PermissionRequired -> {
